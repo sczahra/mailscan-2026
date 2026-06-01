@@ -17,6 +17,8 @@ class Preferences:
     auto_classify_unclassified_on_start: bool = False
     auto_extract_first_preview_on_start: bool = False
     auto_generate_audit_on_start: bool = False
+    auto_learn_vendors_on_start: bool = True
+    quiet_startup_automation: bool = True
 
 
 def settings_path() -> Path:
