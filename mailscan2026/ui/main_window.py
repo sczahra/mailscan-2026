@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -23,10 +24,12 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QProgressDialog,
+    QSplitter,
 )
 
 
 APP_TITLE = "MailScan 2026"
+SOURCE_PDF_COLUMN = 8
 
 
 class MainWindow(QMainWindow):
@@ -142,22 +145,56 @@ class MainWindow(QMainWindow):
         w = QWidget()
         layout = QVBoxLayout(w)
 
+        splitter = QSplitter(Qt.Horizontal)
+
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+
         self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels([
             "Status", "Category", "Sender", "Type", "Amount", "Due Date",
             "Confidence", "Needs Review", "Source PDF", "Notes"
         ])
-        layout.addWidget(self.table)
+        self.table.itemSelectionChanged.connect(self.update_selected_document_summary)
+        left_layout.addWidget(self.table)
 
         buttons = QHBoxLayout()
-        open_pdf = QPushButton("Open Selected PDF")
-        open_pdf.setEnabled(False)
-        save_edits = QPushButton("Save Edits")
-        save_edits.setEnabled(False)
-        buttons.addWidget(open_pdf)
-        buttons.addWidget(save_edits)
+        self.open_pdf_button = QPushButton("Open Selected PDF")
+        self.open_pdf_button.clicked.connect(self.open_selected_pdf)
+        self.open_folder_button = QPushButton("Open Containing Folder")
+        self.open_folder_button.clicked.connect(self.open_selected_folder)
+        self.extract_text_button = QPushButton("Extract Text Preview")
+        self.extract_text_button.clicked.connect(self.extract_selected_pdf_text)
+        self.save_edits_button = QPushButton("Save Edits")
+        self.save_edits_button.setEnabled(False)
+        self.save_edits_button.setToolTip("Coming soon: save edited review fields")
+
+        for button in [self.open_pdf_button, self.open_folder_button, self.extract_text_button]:
+            button.setEnabled(False)
+            buttons.addWidget(button)
+        buttons.addWidget(self.save_edits_button)
         buttons.addStretch()
-        layout.addLayout(buttons)
+        left_layout.addLayout(buttons)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+
+        inspector_box = QGroupBox("Document Inspector")
+        inspector_layout = QVBoxLayout(inspector_box)
+        self.selected_pdf_label = QLabel("No document selected.")
+        self.selected_pdf_label.setWordWrap(True)
+        inspector_layout.addWidget(self.selected_pdf_label)
+        self.text_preview = QTextEdit()
+        self.text_preview.setReadOnly(True)
+        self.text_preview.setPlaceholderText("Select a PDF and click Extract Text Preview.")
+        inspector_layout.addWidget(self.text_preview)
+        right_layout.addWidget(inspector_box)
+
+        splitter.addWidget(left)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter)
 
         return w
 
@@ -291,6 +328,8 @@ class MainWindow(QMainWindow):
             for col, value in enumerate(values):
                 self.table.setItem(row, col, QTableWidgetItem(value))
 
+        self.table.resizeColumnsToContents()
+        self._set_document_buttons_enabled(self.table.rowCount() > 0)
         self.log(f"Preview imported {len(pdfs)} OCR PDFs from {root}")
         QMessageBox.information(self, "Import Preview", f"Found {len(pdfs)} OCR PDFs.\nNo files were modified.")
 
@@ -300,6 +339,95 @@ class MainWindow(QMainWindow):
             if part in known:
                 return part
         return ""
+
+    def _set_document_buttons_enabled(self, enabled: bool):
+        for button in [self.open_pdf_button, self.open_folder_button, self.extract_text_button]:
+            button.setEnabled(enabled)
+
+    def selected_pdf_path(self) -> Path | None:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, SOURCE_PDF_COLUMN)
+        if not item or not item.text().strip():
+            return None
+        return Path(item.text().strip())
+
+    def update_selected_document_summary(self):
+        pdf = self.selected_pdf_path()
+        if not pdf:
+            self.selected_pdf_label.setText("No document selected.")
+            self._set_document_buttons_enabled(False)
+            return
+        self._set_document_buttons_enabled(True)
+        size_text = ""
+        if pdf.exists():
+            size_text = f"\nSize: {pdf.stat().st_size / (1024 * 1024):.2f} MB"
+        self.selected_pdf_label.setText(f"Selected PDF:\n{pdf}{size_text}")
+
+    def open_selected_pdf(self):
+        pdf = self.selected_pdf_path()
+        if not pdf:
+            QMessageBox.information(self, "No selection", "Select a document first.")
+            return
+        if not pdf.exists():
+            QMessageBox.warning(self, "File not found", f"Could not find:\n{pdf}")
+            return
+        os.startfile(str(pdf))
+        self.log(f"Opened PDF: {pdf}")
+
+    def open_selected_folder(self):
+        pdf = self.selected_pdf_path()
+        if not pdf:
+            QMessageBox.information(self, "No selection", "Select a document first.")
+            return
+        folder = pdf.parent
+        if not folder.exists():
+            QMessageBox.warning(self, "Folder not found", f"Could not find:\n{folder}")
+            return
+        os.startfile(str(folder))
+        self.log(f"Opened folder: {folder}")
+
+    def extract_selected_pdf_text(self):
+        pdf = self.selected_pdf_path()
+        if not pdf:
+            QMessageBox.information(self, "No selection", "Select a document first.")
+            return
+        if not pdf.exists():
+            QMessageBox.warning(self, "File not found", f"Could not find:\n{pdf}")
+            return
+
+        self.text_preview.setPlainText("Extracting text preview...")
+        QApplication.processEvents()
+
+        try:
+            import fitz
+        except Exception as exc:
+            self.text_preview.setPlainText("PyMuPDF is not available. Install requirements and try again.")
+            self.log(f"Text extraction unavailable: {exc}")
+            return
+
+        try:
+            doc = fitz.open(pdf)
+            page_count = doc.page_count
+            chunks: list[str] = []
+            max_pages = min(page_count, 5)
+            for index in range(max_pages):
+                page = doc[index]
+                text = page.get_text("text") or ""
+                chunks.append(f"===== PAGE {index + 1} of {page_count} =====\n{text.strip()}")
+            doc.close()
+
+            preview = "\n\n".join(chunks).strip()
+            if not preview:
+                preview = "No extractable text found in the first pages. The PDF may be image-only or OCR quality may be poor."
+            if page_count > max_pages:
+                preview += f"\n\n[Preview limited to first {max_pages} pages of {page_count}.]"
+            self.text_preview.setPlainText(preview)
+            self.log(f"Extracted text preview from: {pdf}")
+        except Exception as exc:
+            self.text_preview.setPlainText(f"Could not extract text preview.\n\n{exc}")
+            self.log(f"Text extraction failed for {pdf}: {exc}")
 
     def run_startup_checks(self):
         self.log("Startup check: scanning local Git status...")
@@ -507,14 +635,3 @@ class StartupProgress:
         self.dialog.setValue(100)
         self.dialog.close()
         QApplication.processEvents()
-
-
-def run_app():
-    app = QApplication([])
-    progress = StartupProgress()
-    progress.update(5, "Starting application...")
-    window = MainWindow(progress.update)
-    progress.update(90, "Opening window...")
-    window.show()
-    progress.finish()
-    app.exec()
