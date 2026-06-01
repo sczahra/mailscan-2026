@@ -18,14 +18,36 @@ class Classification:
     is_bill: bool
 
 
-BILL_WORDS = [
-    "amount due", "balance due", "payment due", "due date", "minimum payment",
-    "statement balance", "total due", "please pay", "invoice", "bill", "autopay",
+PAYABLE_WORDS = [
+    "amount due", "balance due", "payment due", "minimum payment", "total due",
+    "please pay", "pay this amount", "new charges", "autopay", "invoice due",
+]
+
+STATEMENT_WORDS = [
+    "statement", "statement date", "account summary", "previous balance", "transactions",
 ]
 
 INFO_WORDS = [
     "we missed you", "redelivery", "tracking", "article number", "final notice",
     "delivery notice", "certified mail", "return receipt", "notice/reminder/receipt",
+    "important information", "member appeal", "explanation of benefits",
+]
+
+KNOWN_SENDERS = {
+    "sentara": "Sentara",
+    "senta ra": "Sentara",
+    "chase": "Chase",
+    "mission lane": "Mission Lane",
+    "guardian": "Guardian",
+    "usps": "United States Postal Service",
+    "united states postal": "United States Postal Service",
+    "farmville": "Farmville",
+}
+
+BAD_SENDER_PHRASES = [
+    "help in your language", "quote", "page ", "member appeal", "may,", "virginian",
+    "today's date", "sender's name", "amount due", "delivery section", "notice left",
+    "important information", "see reverse", "for redelivery", "fee", "ition",
 ]
 
 
@@ -34,59 +56,100 @@ def classify_document(pdf: Path, text: str, summary_doc_type: str = "") -> Class
     name = pdf.name.lower()
 
     is_usps = _has_any(lower, ["usps tracking", "ps form 3849", "we missed you", "redelivery"]) or "usps" in name
-    bill_score = sum(1 for word in BILL_WORDS if word in lower)
+    payable_score = sum(1 for word in PAYABLE_WORDS if word in lower)
+    statement_score = sum(1 for word in STATEMENT_WORDS if word in lower)
     info_score = sum(1 for word in INFO_WORDS if word in lower)
     amounts = find_amounts(text)
     dates = find_dates(text)
+    sender, sender_note = guess_sender_with_note(text, pdf)
+    category = _guess_category_from_path(pdf, default="Unsorted")
 
     if is_usps:
         return Classification(
             category="Mail",
             sender="United States Postal Service",
-            doc_type="USPS Notice / Certified Mail Notice",
+            doc_type="Informational / Notice",
             amount="",
             due_date=_first(dates),
             confidence="Fair",
             needs_review="Yes",
-            notes="Informational notice. Tracking/article numbers may be present.",
+            notes="USPS notice. Tracking/article numbers may be present. No payable amount detected.",
             is_bill=False,
         )
 
-    if bill_score >= 2 or (bill_score >= 1 and amounts):
+    if "medical" in category.lower() or _has_any(lower, ["sentara", "patient", "insurance", "explanation of benefits"]):
+        if payable_score >= 1 and amounts:
+            return Classification(
+                category=category if category != "Unsorted" else "Medical",
+                sender=sender,
+                doc_type="Medical / Insurance Statement",
+                amount=_first(amounts),
+                due_date=_first(dates),
+                confidence="Fair",
+                needs_review="Yes",
+                notes=_join_notes("Medical/insurance document with possible payable amount. Review before relying on total.", sender_note),
+                is_bill=True,
+            )
         return Classification(
-            category=_guess_category_from_path(pdf, default="Bills"),
-            sender=guess_sender(text, pdf),
-            doc_type="Bill / Statement",
+            category=category if category != "Unsorted" else "Medical",
+            sender=sender,
+            doc_type="Medical / Insurance Statement",
+            amount="",
+            due_date=_first(dates),
+            confidence="Low" if not sender else "Fair",
+            needs_review="Yes",
+            notes=_join_notes("Medical/insurance document. Amount not treated as payable unless payment language is clear.", sender_note),
+            is_bill=False,
+        )
+
+    if payable_score >= 1 and amounts:
+        return Classification(
+            category=category if category != "Unsorted" else "Bills",
+            sender=sender,
+            doc_type="Bill / Payable",
             amount=_first(amounts),
             due_date=_first(dates),
-            confidence="Fair" if amounts or dates else "Low",
+            confidence="Fair",
             needs_review="Yes",
-            notes="Bill-like language detected. Review amount and due date before relying on it.",
+            notes=_join_notes("Payable language and amount detected. Review amount and due date before relying on it.", sender_note),
             is_bill=True,
+        )
+
+    if statement_score >= 1 and amounts:
+        return Classification(
+            category=category if category != "Unsorted" else "Bills",
+            sender=sender,
+            doc_type="Statement / Possible Balance",
+            amount="",
+            due_date=_first(dates),
+            confidence="Low",
+            needs_review="Yes",
+            notes=_join_notes("Amount found, but payable context is unclear. Not included in total by default.", sender_note),
+            is_bill=False,
         )
 
     if info_score >= 1 or summary_doc_type not in ("", "Unknown", "Bill / Statement"):
         return Classification(
-            category=_guess_category_from_path(pdf, default="Info"),
-            sender=guess_sender(text, pdf),
+            category=category if category != "Unsorted" else "Info",
+            sender=sender,
             doc_type=summary_doc_type if summary_doc_type and summary_doc_type != "Unknown" else "Informational / Notice",
             amount="",
             due_date=_first(dates),
-            confidence="Fair",
+            confidence="Fair" if sender else "Low",
             needs_review="Yes",
-            notes="Informational document. No payable amount detected.",
+            notes=_join_notes("Informational document. No payable amount detected.", sender_note),
             is_bill=False,
         )
 
     return Classification(
-        category=_guess_category_from_path(pdf, default="Unsorted"),
-        sender=guess_sender(text, pdf),
-        doc_type="Unknown",
+        category=category,
+        sender=sender,
+        doc_type="Unknown / Needs Review",
         amount="",
         due_date=_first(dates),
         confidence="Low",
         needs_review="Yes",
-        notes="Could not confidently classify as bill or informational.",
+        notes=_join_notes("Could not confidently classify as payable bill or informational notice.", sender_note),
         is_bill=False,
     )
 
@@ -107,21 +170,67 @@ def find_dates(text: str) -> list[str]:
 
 
 def guess_sender(text: str, pdf: Path) -> str:
-    lower = text.lower()
-    if "united states postal" in lower or "usps" in lower or "ps form 3849" in lower:
-        return "United States Postal Service"
+    sender, _note = guess_sender_with_note(text, pdf)
+    return sender
 
-    for line in text.splitlines()[:30]:
-        clean = " ".join(line.strip().split())
-        if not clean or len(clean) < 3:
+
+def guess_sender_with_note(text: str, pdf: Path) -> tuple[str, str]:
+    lower = text.lower()
+    normalized = normalize_known_sender(lower)
+    if normalized:
+        note = "Sender normalized from OCR/text."
+        return normalized, note
+
+    for line in text.splitlines()[:45]:
+        clean = clean_sender_line(line)
+        if not clean:
             continue
-        if clean.lower() in {"today's date", "sender's name", "date", "time"}:
+        normalized_line = normalize_known_sender(clean.lower())
+        if normalized_line:
+            return normalized_line, "Sender normalized from OCR/text."
+        if is_bad_sender(clean):
             continue
         if re.search(r"[A-Za-z]", clean) and not re.search(r"\d{5}", clean):
-            return clean[:80]
+            return clean[:80], ""
 
     stem = pdf.stem.replace("_OCR", "").replace("-OCR", "")
-    return stem.replace("_", " ").replace("-", " ").strip().title()
+    fallback = stem.replace("_", " ").replace("-", " ").strip().title()
+    return fallback, "Sender guessed from filename."
+
+
+def clean_sender_line(line: str) -> str:
+    value = " ".join(line.strip().split())
+    value = value.replace("©", "").replace("®", "").strip()
+    value = re.sub(r"^[^A-Za-z0-9]+", "", value)
+    value = re.sub(r"[^A-Za-z0-9 '&.,/-]+$", "", value)
+    return value.strip()
+
+
+def normalize_known_sender(text: str) -> str:
+    simplified = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    simplified = re.sub(r"\s+", " ", simplified).strip()
+    for key, value in KNOWN_SENDERS.items():
+        if key in simplified:
+            return value
+    return ""
+
+
+def is_bad_sender(sender: str) -> bool:
+    value = sender.strip()
+    lower = value.lower()
+    if len(value) < 4:
+        return True
+    if re.search(r"[{}|_\[\]]", value):
+        return True
+    if re.search(r"^[a-zA-Z]$", value):
+        return True
+    if re.search(r"^page\s+\d+", lower):
+        return True
+    if re.search(r"^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*,?\s+\d{4}$", lower):
+        return True
+    if lower in {"fee", "ition", "date", "time", "amount", "total"}:
+        return True
+    return any(phrase in lower for phrase in BAD_SENDER_PHRASES)
 
 
 def _guess_category_from_path(pdf: Path, default: str) -> str:
@@ -138,6 +247,10 @@ def _has_any(text: str, needles: list[str]) -> bool:
 
 def _first(values: list[str]) -> str:
     return values[0] if values else ""
+
+
+def _join_notes(*notes: str) -> str:
+    return " ".join(note for note in notes if note).strip()
 
 
 def unique_limited(values: list[str], limit: int) -> list[str]:
