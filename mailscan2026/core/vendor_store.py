@@ -9,8 +9,8 @@ from mailscan2026.core import session_store
 
 
 LEARNED_VENDOR_FILE = "vendors_learned.json"
-MAX_LEARNED_VENDORS = 500
-MAX_ALIASES_PER_VENDOR = 20
+MAX_LEARNED_VENDORS = 2000
+MAX_ALIASES_PER_VENDOR = 25
 
 
 @dataclass
@@ -60,6 +60,12 @@ SEED_VENDORS: list[Vendor] = [
 ]
 
 
+BAD_LEARNED_VENDOR_NAMES = {
+    "scoatm", "js bint", "danielle e zahra", "seth c zahra", "seth med raw",
+    "dani med appt", "patient information", "guarantor name",
+}
+
+
 def learned_vendor_path() -> Path:
     return session_store.app_data_dir() / LEARNED_VENDOR_FILE
 
@@ -87,7 +93,7 @@ def load_learned_vendors() -> list[Vendor]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name", "")).strip()
-        if not name:
+        if not name or should_reject_vendor_name(name):
             continue
         aliases = [str(a) for a in item.get("aliases", []) if str(a).strip()]
         vendors.append(Vendor(
@@ -102,10 +108,12 @@ def load_learned_vendors() -> list[Vendor]:
 
 def save_learned_vendors(vendors: list[Vendor]) -> Path:
     session_store.ensure_app_data_dir()
+    vendors = [v for v in vendors if not should_reject_vendor_name(v.name)]
     vendors = sorted(vendors, key=lambda v: (-v.count, v.name.lower()))[:MAX_LEARNED_VENDORS]
     payload = {
         "schema": 1,
         "note": "Local learned vendor hints only. Safe to delete. Do not commit .local.",
+        "max_learned_vendors": MAX_LEARNED_VENDORS,
         "vendors": [
             {
                 "name": v.name,
@@ -138,7 +146,6 @@ def match_vendor(text: str, pdf: Path | None = None, strong_only: bool = False) 
             score = 0
             for index, haystack in enumerate(haystacks):
                 if key in haystack:
-                    # Filename/path hits matter, but exact early-text hits matter too.
                     score = max(score, 100 - index * 10 + min(len(key), 20))
             if score and (best is None or score > best[0]):
                 best = (score, vendor)
@@ -158,11 +165,7 @@ def learn_from_rows(rows: list[dict[str, str]]) -> tuple[int, Path]:
         doc_type = str(row.get("Type", "")).lower()
         source = str(row.get("Source PDF", "")).strip()
 
-        if not sender or len(sender) < 4:
-            continue
-        if "likely wrong sender" in flags or "manual sender review" in notes:
-            continue
-        if "unknown" in doc_type:
+        if not is_safe_to_learn_sender(sender, flags, notes, doc_type):
             continue
         key = normalize_key(sender)
         if not key or key in seed_keys:
@@ -180,13 +183,49 @@ def learn_from_rows(rows: list[dict[str, str]]) -> tuple[int, Path]:
     return added_or_updated, path
 
 
+def is_safe_to_learn_sender(sender: str, flags: str, notes: str, doc_type: str) -> bool:
+    if not sender or len(sender) < 4 or should_reject_vendor_name(sender):
+        return False
+    if any(term in flags for term in ["likely wrong sender", "low confidence"]):
+        return False
+    if any(term in notes for term in ["manual sender review", "guessed from filename", "guessed from ocr line"]):
+        return False
+    if "unknown" in doc_type:
+        return False
+    if re.search(r"\b(?:seth|danielle|dani)\b", sender, flags=re.IGNORECASE):
+        return False
+    return True
+
+
+def should_reject_vendor_name(name: str) -> bool:
+    key = normalize_key(name)
+    if key in BAD_LEARNED_VENDOR_NAMES:
+        return True
+    if len(key) < 4 or len(key) > 55:
+        return True
+    if re.search(r"[a-z]*\d[a-z0-9-]*\d", key) and len(key.split()) <= 3:
+        return True
+    if re.search(r"\b(?:seth|danielle|dani)\b", key):
+        return True
+    if key in {"fee", "date", "time", "amount", "total", "patient information", "guarantor name"}:
+        return True
+    return False
+
+
+def compact_learned_database() -> tuple[int, Path]:
+    before = load_learned_vendors()
+    path = save_learned_vendors(before)
+    after = load_learned_vendors()
+    return len(before) - len(after), path
+
+
 def database_summary() -> str:
     learned = load_learned_vendors()
     lines = [
         "Vendor Database",
         "===============",
         f"Seed vendors: {len(SEED_VENDORS)}",
-        f"Learned vendors: {len(learned)}",
+        f"Learned vendors: {len(learned)} / {MAX_LEARNED_VENDORS}",
         f"Local learned file: {learned_vendor_path()}",
         "",
         "Seed Vendors",
