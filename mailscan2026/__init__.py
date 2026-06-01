@@ -1,1 +1,1 @@
-__version__ = "0.3.0-skeleton"
+__version__ = "0.3.2"
