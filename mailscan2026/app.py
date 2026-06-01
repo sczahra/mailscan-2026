@@ -1,13 +1,17 @@
 from pathlib import Path
 
 from mailscan2026 import NEW_FEATURE_TABS, __version__
-from mailscan2026.core import ocr_analysis
+from mailscan2026.core import ocr_analysis, session_store
 from mailscan2026.ui.main_window import MainWindow, StartupProgress
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QMessageBox, QPushButton, QTableWidgetItem
 
 
 SOURCE_PDF_COLUMN = 8
+HEADERS = [
+    "Status", "Category", "Sender", "Type", "Amount", "Due Date",
+    "Confidence", "Needs Review", "Source PDF", "Notes"
+]
 
 
 def apply_new_feature_tab_markers(window: MainWindow) -> None:
@@ -88,6 +92,128 @@ def install_ocr_summary_patch() -> None:
     MainWindow.extract_selected_pdf_text = extract_selected_pdf_text
 
 
+def install_session_patch() -> None:
+    """Add local-only save/load/clear session controls to the Documents table."""
+
+    original_documents_tab = MainWindow._documents_tab
+    original_run_startup_checks = MainWindow.run_startup_checks
+
+    def documents_tab_with_session(self: MainWindow):
+        widget = original_documents_tab(self)
+
+        self.save_session_button = QPushButton("Save Session")
+        self.save_session_button.clicked.connect(self.save_review_session)
+        self.load_session_button = QPushButton("Load Session")
+        self.load_session_button.clicked.connect(self.load_review_session)
+        self.clear_session_button = QPushButton("Clear Session")
+        self.clear_session_button.clicked.connect(self.clear_review_session)
+        self.session_status_label = QPushButton("Session: local only")
+        self.session_status_label.setEnabled(False)
+        self.session_status_label.setToolTip(str(session_store.session_path()))
+
+        session_row = QHBoxLayout()
+        session_row.addWidget(self.save_session_button)
+        session_row.addWidget(self.load_session_button)
+        session_row.addWidget(self.clear_session_button)
+        session_row.addWidget(self.session_status_label)
+        session_row.addStretch()
+        widget.layout().addLayout(session_row)
+
+        return widget
+
+    def run_startup_checks_with_session(self: MainWindow):
+        original_run_startup_checks(self)
+        self.update_session_status()
+        info = session_store.session_info()
+        if info.exists and info.row_count:
+            self.load_review_session(silent=True)
+
+    def table_rows_as_dicts(self: MainWindow) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        for row in range(self.table.rowCount()):
+            data: dict[str, str] = {}
+            for col, header in enumerate(HEADERS):
+                item = self.table.item(row, col)
+                data[header] = item.text() if item else ""
+            rows.append(data)
+        return rows
+
+    def populate_table_from_rows(self: MainWindow, rows: list[dict[str, str]]):
+        self.table.setRowCount(0)
+        for row_data in rows:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            for col, header in enumerate(HEADERS):
+                value = row_data.get(header, "")
+                self.table.setItem(row, col, QTableWidgetItem(value))
+        self.table.resizeColumnsToContents()
+        if self.table.rowCount() > 0:
+            self.table.selectRow(0)
+        self._set_document_buttons_enabled(self.table.rowCount() > 0)
+
+    def save_review_session(self: MainWindow):
+        rows = self.table_rows_as_dicts()
+        path = session_store.save_session(rows)
+        self.update_session_status()
+        self.log(f"Saved local review session with {len(rows)} row(s): {path}")
+        QMessageBox.information(self, "Session Saved", f"Saved {len(rows)} row(s) locally.\n\n{path}")
+
+    def load_review_session(self: MainWindow, silent: bool = False):
+        try:
+            rows = session_store.load_session()
+        except Exception as exc:
+            self.log(f"Could not load local review session: {exc}")
+            if not silent:
+                QMessageBox.warning(self, "Load Failed", f"Could not load local review session.\n\n{exc}")
+            return
+
+        if not rows:
+            self.update_session_status()
+            if not silent:
+                QMessageBox.information(self, "No Session", "No saved local review session was found.")
+            return
+
+        self.populate_table_from_rows(rows)
+        self.update_session_status()
+        self.log(f"Loaded local review session with {len(rows)} row(s).")
+        if not silent:
+            QMessageBox.information(self, "Session Loaded", f"Loaded {len(rows)} row(s) from local session.")
+
+    def clear_review_session(self: MainWindow):
+        confirm = QMessageBox.question(
+            self,
+            "Clear Local Session",
+            "Clear the saved local review session?\n\nThis does not delete or modify source PDFs.",
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        removed = session_store.clear_session()
+        self.update_session_status()
+        self.log("Cleared local review session." if removed else "No local review session existed to clear.")
+
+    def update_session_status(self: MainWindow):
+        if not hasattr(self, "session_status_label"):
+            return
+        info = session_store.session_info()
+        if info.exists:
+            text = f"Session: {info.row_count} row(s)"
+            if info.saved_at:
+                text += f" saved {info.saved_at}"
+        else:
+            text = "Session: none saved"
+        self.session_status_label.setText(text)
+        self.session_status_label.setToolTip(str(info.path))
+
+    MainWindow._documents_tab = documents_tab_with_session
+    MainWindow.run_startup_checks = run_startup_checks_with_session
+    MainWindow.table_rows_as_dicts = table_rows_as_dicts
+    MainWindow.populate_table_from_rows = populate_table_from_rows
+    MainWindow.save_review_session = save_review_session
+    MainWindow.load_review_session = load_review_session
+    MainWindow.clear_review_session = clear_review_session
+    MainWindow.update_session_status = update_session_status
+
+
 def _selected_pdf_path(window: MainWindow) -> Path | None:
     row = window.table.currentRow()
     if row < 0:
@@ -100,6 +226,7 @@ def _selected_pdf_path(window: MainWindow) -> Path | None:
 
 def run_app():
     install_ocr_summary_patch()
+    install_session_patch()
 
     app = QApplication([])
     app.setApplicationName("MailScan 2026")
