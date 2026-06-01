@@ -1,5 +1,5 @@
 from mailscan2026 import NEW_FEATURE_TABS, __version__
-from mailscan2026.core import review_quality
+from mailscan2026.core import review_quality, startup_automation
 from mailscan2026.ui.main_window import MainWindow, StartupProgress
 
 from mailscan2026.app import (
@@ -28,6 +28,11 @@ def run_app():
         _classify_row,
         _pdf_path_for_row,
         _cell_text,
+    )
+    startup_automation.install_startup_automation_tools(
+        MainWindow,
+        HEADERS,
+        _classify_row,
     )
 
     app = QApplication([])
