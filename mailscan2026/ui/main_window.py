@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -20,6 +22,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QFileDialog,
     QMessageBox,
+    QProgressDialog,
 )
 
 
@@ -27,16 +30,29 @@ APP_TITLE = "MailScan 2026"
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, progress: Callable[[int, str], None] | None = None):
         super().__init__()
         self.setWindowTitle(f"{APP_TITLE} - Desktop Skeleton")
         self.resize(1180, 780)
 
+        self.repo_root = Path(__file__).resolve().parents[2]
         self.scan_root = Path("E:/Scans")
+
+        self._progress(progress, 10, "Building interface...")
         self._build_ui()
+        self._progress(progress, 45, "Applying vintage utility theme...")
         self._apply_theme()
+        self._progress(progress, 70, "Preparing startup checks...")
+
         self.log("MailScan 2026 skeleton loaded.")
         self.log("Manual-first mode: no automatic scanning, OCR, moving, or deleting.")
+
+        # Run after the window is visible so startup feels responsive.
+        QTimer.singleShot(250, self.run_startup_checks)
+
+    def _progress(self, callback: Callable[[int, str], None] | None, value: int, label: str):
+        if callback:
+            callback(value, label)
 
     def _build_ui(self):
         root = QWidget()
@@ -50,6 +66,11 @@ class MainWindow(QMainWindow):
         header.addWidget(title)
         header.addWidget(subtitle)
         header.addStretch()
+
+        self.git_status_label = QLabel("Git: checking...")
+        self.git_status_label.setObjectName("StatusPill")
+        self.git_status_label.setToolTip("Repository status is checked at startup. MailScan does not push, pull, or change Git automatically.")
+        header.addWidget(self.git_status_label)
 
         self.btn_import = QPushButton("Import OCR PDFs")
         self.btn_import.clicked.connect(self.import_ocr_pdfs)
@@ -216,11 +237,16 @@ class MainWindow(QMainWindow):
         row.addWidget(browse)
         form.addRow("Scan root", row)
 
+        self.repo_root_edit = QLineEdit(str(self.repo_root))
+        self.repo_root_edit.setReadOnly(True)
+        form.addRow("Repo root", self.repo_root_edit)
+
         layout.addWidget(box)
 
         safety = QGroupBox("Safety")
         safety_layout = QVBoxLayout(safety)
         safety_layout.addWidget(QLabel("MailScan should never move, delete, or modify source scans unless explicitly enabled in a future version."))
+        safety_layout.addWidget(QLabel("Startup Git checks are read-only. MailScan does not push, pull, commit, or stage files automatically."))
         layout.addWidget(safety)
         layout.addStretch()
         return w
@@ -275,6 +301,104 @@ class MainWindow(QMainWindow):
                 return part
         return ""
 
+    def run_startup_checks(self):
+        self.log("Startup check: scanning local Git status...")
+        report = self._git_status_report()
+        self.log(report["details"])
+        self.git_status_label.setText(report["label"])
+        self.git_status_label.setToolTip(report["tooltip"])
+        self.git_status_label.setProperty("gitState", report["state"])
+        self.git_status_label.style().unpolish(self.git_status_label)
+        self.git_status_label.style().polish(self.git_status_label)
+
+    def _git_status_report(self) -> dict[str, str]:
+        if not (self.repo_root / ".git").exists():
+            return {
+                "state": "missing",
+                "label": "Git: not a repo",
+                "tooltip": f"No .git folder found at {self.repo_root}",
+                "details": f"Git status: no .git folder found at {self.repo_root}",
+            }
+
+        if not self._command_exists("git"):
+            return {
+                "state": "missing",
+                "label": "Git: not found",
+                "tooltip": "Git is not available on PATH.",
+                "details": "Git status: git command not found on PATH.",
+            }
+
+        branch = self._run_git(["branch", "--show-current"])
+        status = self._run_git(["status", "--short"])
+        upstream = self._run_git(["status", "-sb"])
+        remote = self._run_git(["remote", "-v"])
+
+        branch_text = branch.strip() or "unknown"
+        status_lines = [line for line in status.splitlines() if line.strip()]
+        upstream_first = upstream.splitlines()[0].strip() if upstream.strip() else ""
+
+        if status.startswith("ERROR:") or branch.startswith("ERROR:"):
+            return {
+                "state": "dirty",
+                "label": "Git: check failed",
+                "tooltip": "Startup Git check failed. See log.",
+                "details": f"Git status check failed.\n{branch}\n{status}",
+            }
+
+        if status_lines:
+            state = "dirty"
+            label = f"Git: {len(status_lines)} change(s)"
+            detail = "Git status: local changes found.\n"
+        else:
+            state = "clean"
+            label = "Git: clean"
+            detail = "Git status: working tree clean.\n"
+
+        detail += f"Branch: {branch_text}\n"
+        if upstream_first:
+            detail += f"Tracking: {upstream_first}\n"
+        if remote.strip():
+            detail += "Remote configured.\n"
+
+        return {
+            "state": state,
+            "label": label,
+            "tooltip": detail.strip(),
+            "details": detail.strip(),
+        }
+
+    def _command_exists(self, command: str) -> bool:
+        try:
+            completed = subprocess.run(
+                [command, "--version"],
+                cwd=self.repo_root,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                shell=False,
+            )
+            return completed.returncode == 0
+        except Exception:
+            return False
+
+    def _run_git(self, args: list[str]) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", *args],
+                cwd=self.repo_root,
+                capture_output=True,
+                text=True,
+                timeout=8,
+                shell=False,
+            )
+            output = (completed.stdout or "").strip()
+            error = (completed.stderr or "").strip()
+            if completed.returncode != 0:
+                return f"ERROR: {error or output or completed.returncode}"
+            return output
+        except Exception as exc:
+            return f"ERROR: {exc}"
+
     def log(self, message: str):
         self.log_box.append(message)
 
@@ -294,6 +418,25 @@ class MainWindow(QMainWindow):
             #SubtitleLabel {
                 color: #444;
                 padding-left: 12px;
+            }
+            #StatusPill {
+                background: #f7f5ee;
+                border: 1px solid #777;
+                border-radius: 8px;
+                padding: 3px 9px;
+                color: #222;
+            }
+            #StatusPill[gitState="clean"] {
+                background: #dfead2;
+                border-color: #728c58;
+            }
+            #StatusPill[gitState="dirty"] {
+                background: #f0dfbd;
+                border-color: #9c7a3a;
+            }
+            #StatusPill[gitState="missing"] {
+                background: #e8caca;
+                border-color: #a06464;
             }
             QPushButton {
                 background: #e9e7df;
@@ -344,8 +487,34 @@ class MainWindow(QMainWindow):
         """)
 
 
+class StartupProgress:
+    def __init__(self):
+        self.dialog = QProgressDialog("Starting MailScan 2026...", "", 0, 100)
+        self.dialog.setWindowTitle("MailScan 2026")
+        self.dialog.setCancelButton(None)
+        self.dialog.setWindowModality(Qt.ApplicationModal)
+        self.dialog.setMinimumDuration(0)
+        self.dialog.setValue(0)
+        self.dialog.show()
+        QApplication.processEvents()
+
+    def update(self, value: int, label: str):
+        self.dialog.setLabelText(label)
+        self.dialog.setValue(value)
+        QApplication.processEvents()
+
+    def finish(self):
+        self.dialog.setValue(100)
+        self.dialog.close()
+        QApplication.processEvents()
+
+
 def run_app():
     app = QApplication([])
-    window = MainWindow()
+    progress = StartupProgress()
+    progress.update(5, "Starting application...")
+    window = MainWindow(progress.update)
+    progress.update(90, "Opening window...")
     window.show()
+    progress.finish()
     app.exec()
