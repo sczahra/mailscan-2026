@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from mailscan2026.core import vendor_store
+
 
 @dataclass(frozen=True)
 class Classification:
@@ -34,23 +36,12 @@ INFO_WORDS = [
     "important information", "member appeal", "explanation of benefits",
 ]
 
-KNOWN_SENDERS = {
-    "sentara": "Sentara",
-    "senta ra": "Sentara",
-    "chase": "Chase",
-    "mission lane": "Mission Lane",
-    "guardian": "Guardian",
-    "united states postal": "United States Postal Service",
-    "usps": "United States Postal Service",
-    "hill davis": "Hill Davis",
-    "hilldavis": "Hill Davis",
-}
-
 BAD_SENDER_PHRASES = [
     "help in your language", "quote", "page ", "member appeal", "may,", "virginian",
     "today's date", "sender's name", "amount due", "delivery section", "notice left",
     "important information", "see reverse", "for redelivery", "fee", "ition",
     "if we do not have your information", "following has changed", "customer name",
+    "patient information", "guarantor name", "look for important dates",
 ]
 
 
@@ -80,10 +71,7 @@ def classify_document(pdf: Path, text: str, summary_doc_type: str = "") -> Class
             is_bill=False,
         )
 
-    # Folder/category acts as a guardrail. Do not let random words like "insurance" turn
-    # non-medical folders into medical statements.
     is_medical_folder = category.lower() == "medical"
-    medical_signals = _has_any(lower, ["sentara", "patient", "explanation of benefits", "medical record", "insurance claim"])
 
     if is_medical_folder:
         if payable_score >= 1 and amounts:
@@ -183,21 +171,22 @@ def guess_sender(text: str, pdf: Path) -> str:
 
 
 def guess_sender_with_note(text: str, pdf: Path) -> tuple[str, str]:
+    vendor = vendor_store.match_vendor(text, pdf=pdf, strong_only=True)
+    if vendor:
+        return vendor.name, f"Sender matched vendor database ({vendor.source})."
+
     lines = [clean_sender_line(line) for line in text.splitlines()[:55]]
     lines = [line for line in lines if line]
-
-    # Strong sender-like region only: first 20 usable lines. This prevents random footer/body
-    # words like Farmville or Chase from hijacking unrelated docs.
-    for line in lines[:20]:
-        normalized_line = normalize_known_sender(line.lower())
-        if normalized_line:
-            return normalized_line, "Sender normalized from OCR/text."
 
     for line in lines[:35]:
         if is_bad_sender(line):
             continue
         if re.search(r"[A-Za-z]", line) and not re.search(r"\d{5}", line):
-            return line[:80], ""
+            return line[:80], "Needs manual sender review. Sender guessed from OCR line."
+
+    filename_vendor = vendor_store.match_vendor("", pdf=pdf, strong_only=True)
+    if filename_vendor:
+        return filename_vendor.name, f"Sender inferred from filename/path vendor hint ({filename_vendor.source})."
 
     stem = pdf.stem.replace("_OCR", "").replace("-OCR", "")
     fallback = stem.replace("_", " ").replace("-", " ").strip().title()
@@ -214,19 +203,12 @@ def clean_sender_line(line: str) -> str:
     return value.strip()
 
 
-def normalize_known_sender(text: str) -> str:
-    simplified = re.sub(r"[^a-z0-9]+", " ", text.lower())
-    simplified = re.sub(r"\s+", " ", simplified).strip()
-    for key, value in KNOWN_SENDERS.items():
-        if key in simplified:
-            return value
-    return ""
-
-
 def is_bad_sender(sender: str) -> bool:
     value = sender.strip()
     lower = value.lower()
     if len(value) < 4:
+        return True
+    if len(value) > 55:
         return True
     if re.search(r"[{}|_\[\]]", value):
         return True
@@ -236,7 +218,9 @@ def is_bad_sender(sender: str) -> bool:
         return True
     if re.search(r"^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*,?\s+\d{4}$", lower):
         return True
-    if lower in {"fee", "ition", "date", "time", "amount", "total", "farmville"}:
+    if re.search(r"[a-zA-Z]*\d[a-zA-Z0-9-]*\d", value) and len(value.split()) <= 3:
+        return True
+    if lower in {"fee", "ition", "date", "time", "amount", "total", "farmville", "patient information", "guarantor name"}:
         return True
     return any(phrase in lower for phrase in BAD_SENDER_PHRASES)
 
