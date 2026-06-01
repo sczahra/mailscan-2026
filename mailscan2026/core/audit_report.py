@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from mailscan2026.core import session_store
+from mailscan2026.core import document_classifier, session_store
 
 
 HEADERS = [
@@ -50,8 +50,21 @@ def build_flags(row: dict[str, str]) -> list[str]:
     elif is_bad_sender(sender):
         flags.append("Likely wrong sender")
 
+    if "normalized from ocr" in notes.lower():
+        flags.append("Sender normalized from OCR")
+
     amount_value = parse_amount(amount)
-    if ("bill" in doc_type.lower() or "statement" in doc_type.lower()) and amount_value is None:
+    type_lower = doc_type.lower()
+    notes_lower = notes.lower()
+
+    if "bill / payable" in type_lower and amount_value is None:
+        flags.append("Payable bill without amount")
+
+    if any(label in type_lower for label in ["statement / possible balance", "medical / insurance statement"]):
+        if amount_value is not None and "payable" not in notes_lower:
+            flags.append("Amount found but payable context unclear")
+
+    if ("bill" in type_lower or "statement" in type_lower) and amount_value is None and "informational" not in type_lower:
         flags.append("Bill/Statement without payable amount")
 
     info_like = any(word in f"{doc_type} {notes}".lower() for word in ["informational", "notice", "usps", "no payable"])
@@ -68,24 +81,11 @@ def build_flags(row: dict[str, str]) -> list[str]:
     if confidence in ("", "low"):
         flags.append("Low confidence")
 
-    return flags
+    return unique_flags(flags)
 
 
 def is_bad_sender(sender: str) -> bool:
-    value = sender.strip()
-    lower = value.lower()
-    if len(value) < 3:
-        return True
-    if re.search(r"[{}|_\[\]©®]", value):
-        return True
-    if re.search(r"^[a-zA-Z]$", value):
-        return True
-    bad_phrases = [
-        "help in your language", "quote", "page ", "member appeal", "may,", "virginian",
-        "today's date", "sender's name", "amount due", "delivery section", "notice left",
-        "important information", "see reverse", "for redelivery",
-    ]
-    return any(phrase in lower for phrase in bad_phrases)
+    return document_classifier.is_bad_sender(sender)
 
 
 def parse_amount(text: str) -> float | None:
@@ -97,6 +97,16 @@ def parse_amount(text: str) -> float | None:
     except ValueError:
         return None
     return value if value > 0 else None
+
+
+def unique_flags(flags: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for flag in flags:
+        if flag not in seen:
+            output.append(flag)
+            seen.add(flag)
+    return output
 
 
 def export_audit_csv(rows: list[dict[str, str]]) -> AuditSummary:
@@ -116,7 +126,7 @@ def export_audit_csv(rows: list[dict[str, str]]) -> AuditSummary:
         if row.get("Review Flags", ""):
             flagged_rows += 1
         amount = parse_amount(row.get("Amount", ""))
-        if amount is not None:
+        if amount is not None and "bill / payable" in row.get("Type", "").lower():
             positive_amount_rows += 1
             total_amount += amount
 
