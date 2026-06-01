@@ -21,6 +21,7 @@ class Classification:
 PAYABLE_WORDS = [
     "amount due", "balance due", "payment due", "minimum payment", "total due",
     "please pay", "pay this amount", "new charges", "autopay", "invoice due",
+    "past due", "payment is due", "pay by", "remit payment",
 ]
 
 STATEMENT_WORDS = [
@@ -39,30 +40,32 @@ KNOWN_SENDERS = {
     "chase": "Chase",
     "mission lane": "Mission Lane",
     "guardian": "Guardian",
-    "usps": "United States Postal Service",
     "united states postal": "United States Postal Service",
-    "farmville": "Farmville",
+    "usps": "United States Postal Service",
+    "hill davis": "Hill Davis",
+    "hilldavis": "Hill Davis",
 }
 
 BAD_SENDER_PHRASES = [
     "help in your language", "quote", "page ", "member appeal", "may,", "virginian",
     "today's date", "sender's name", "amount due", "delivery section", "notice left",
     "important information", "see reverse", "for redelivery", "fee", "ition",
+    "if we do not have your information", "following has changed", "customer name",
 ]
 
 
 def classify_document(pdf: Path, text: str, summary_doc_type: str = "") -> Classification:
     lower = text.lower()
     name = pdf.name.lower()
+    category = _guess_category_from_path(pdf, default="Unsorted")
+    sender, sender_note = guess_sender_with_note(text, pdf)
+    amounts = find_amounts(text)
+    dates = find_dates(text)
 
     is_usps = _has_any(lower, ["usps tracking", "ps form 3849", "we missed you", "redelivery"]) or "usps" in name
     payable_score = sum(1 for word in PAYABLE_WORDS if word in lower)
     statement_score = sum(1 for word in STATEMENT_WORDS if word in lower)
     info_score = sum(1 for word in INFO_WORDS if word in lower)
-    amounts = find_amounts(text)
-    dates = find_dates(text)
-    sender, sender_note = guess_sender_with_note(text, pdf)
-    category = _guess_category_from_path(pdf, default="Unsorted")
 
     if is_usps:
         return Classification(
@@ -77,28 +80,33 @@ def classify_document(pdf: Path, text: str, summary_doc_type: str = "") -> Class
             is_bill=False,
         )
 
-    if "medical" in category.lower() or _has_any(lower, ["sentara", "patient", "insurance", "explanation of benefits"]):
+    # Folder/category acts as a guardrail. Do not let random words like "insurance" turn
+    # non-medical folders into medical statements.
+    is_medical_folder = category.lower() == "medical"
+    medical_signals = _has_any(lower, ["sentara", "patient", "explanation of benefits", "medical record", "insurance claim"])
+
+    if is_medical_folder:
         if payable_score >= 1 and amounts:
             return Classification(
-                category=category if category != "Unsorted" else "Medical",
+                category="Medical",
                 sender=sender,
-                doc_type="Medical / Insurance Statement",
+                doc_type="Medical / Possible Payable",
                 amount=_first(amounts),
                 due_date=_first(dates),
-                confidence="Fair",
+                confidence="Low",
                 needs_review="Yes",
-                notes=_join_notes("Medical/insurance document with possible payable amount. Review before relying on total.", sender_note),
-                is_bill=True,
+                notes=_join_notes("Medical folder with amount and possible payment language. Review before counting as payable.", sender_note),
+                is_bill=False,
             )
         return Classification(
-            category=category if category != "Unsorted" else "Medical",
+            category="Medical",
             sender=sender,
             doc_type="Medical / Insurance Statement",
             amount="",
             due_date=_first(dates),
-            confidence="Low" if not sender else "Fair",
+            confidence="Low" if sender_note.startswith("Needs") else "Fair",
             needs_review="Yes",
-            notes=_join_notes("Medical/insurance document. Amount not treated as payable unless payment language is clear.", sender_note),
+            notes=_join_notes("Medical/insurance document. Not treated as payable unless payment language is clear.", sender_note),
             is_bill=False,
         )
 
@@ -135,7 +143,7 @@ def classify_document(pdf: Path, text: str, summary_doc_type: str = "") -> Class
             doc_type=summary_doc_type if summary_doc_type and summary_doc_type != "Unknown" else "Informational / Notice",
             amount="",
             due_date=_first(dates),
-            confidence="Fair" if sender else "Low",
+            confidence="Low" if sender_note.startswith("Needs") else "Fair",
             needs_review="Yes",
             notes=_join_notes("Informational document. No payable amount detected.", sender_note),
             is_bill=False,
@@ -175,27 +183,27 @@ def guess_sender(text: str, pdf: Path) -> str:
 
 
 def guess_sender_with_note(text: str, pdf: Path) -> tuple[str, str]:
-    lower = text.lower()
-    normalized = normalize_known_sender(lower)
-    if normalized:
-        note = "Sender normalized from OCR/text."
-        return normalized, note
+    lines = [clean_sender_line(line) for line in text.splitlines()[:55]]
+    lines = [line for line in lines if line]
 
-    for line in text.splitlines()[:45]:
-        clean = clean_sender_line(line)
-        if not clean:
-            continue
-        normalized_line = normalize_known_sender(clean.lower())
+    # Strong sender-like region only: first 20 usable lines. This prevents random footer/body
+    # words like Farmville or Chase from hijacking unrelated docs.
+    for line in lines[:20]:
+        normalized_line = normalize_known_sender(line.lower())
         if normalized_line:
             return normalized_line, "Sender normalized from OCR/text."
-        if is_bad_sender(clean):
+
+    for line in lines[:35]:
+        if is_bad_sender(line):
             continue
-        if re.search(r"[A-Za-z]", clean) and not re.search(r"\d{5}", clean):
-            return clean[:80], ""
+        if re.search(r"[A-Za-z]", line) and not re.search(r"\d{5}", line):
+            return line[:80], ""
 
     stem = pdf.stem.replace("_OCR", "").replace("-OCR", "")
     fallback = stem.replace("_", " ").replace("-", " ").strip().title()
-    return fallback, "Sender guessed from filename."
+    if fallback:
+        return fallback, "Needs manual sender review. Sender guessed from filename."
+    return "", "Needs manual sender review."
 
 
 def clean_sender_line(line: str) -> str:
@@ -228,7 +236,7 @@ def is_bad_sender(sender: str) -> bool:
         return True
     if re.search(r"^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*,?\s+\d{4}$", lower):
         return True
-    if lower in {"fee", "ition", "date", "time", "amount", "total"}:
+    if lower in {"fee", "ition", "date", "time", "amount", "total", "farmville"}:
         return True
     return any(phrase in lower for phrase in BAD_SENDER_PHRASES)
 
