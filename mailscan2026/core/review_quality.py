@@ -83,34 +83,39 @@ def install_review_quality_tools(
         flags = audit_report.build_flags(row_data)
         self.table.setItem(row, headers.index(REVIEW_FLAGS_HEADER), QTableWidgetItem("; ".join(flags)))
 
-    def generate_audit_report(self):
+    def generate_audit_report(self, silent: bool = False):
         self.refresh_review_flags()
         rows = self.table_rows_as_dicts()
         summary = audit_report.export_audit_csv(rows)
         self.log(
             f"Generated audit report: {summary.report_path} | rows={summary.total_rows}, flagged={summary.flagged_rows}, payable_rows={summary.positive_amount_rows}, total=${summary.total_amount:,.2f}"
         )
-        QMessageBox.information(
-            self,
-            "Audit Report Generated",
-            "Audit report saved locally.\n\n"
-            f"Rows: {summary.total_rows}\n"
-            f"Flagged rows: {summary.flagged_rows}\n"
-            f"Positive payable rows: {summary.positive_amount_rows}\n"
-            f"Total payable amount: ${summary.total_amount:,.2f}\n\n"
-            f"{summary.report_path}",
-        )
+        if not silent:
+            QMessageBox.information(
+                self,
+                "Audit Report Generated",
+                "Audit report saved locally.\n\n"
+                f"Rows: {summary.total_rows}\n"
+                f"Flagged rows: {summary.flagged_rows}\n"
+                f"Positive payable rows: {summary.positive_amount_rows}\n"
+                f"Total payable amount: ${summary.total_amount:,.2f}\n\n"
+                f"{summary.report_path}",
+            )
+        return summary
 
-    def learn_vendors_from_session(self):
+    def learn_vendors_from_session(self, silent: bool = False):
         self.refresh_review_flags()
         rows = self.table_rows_as_dicts()
+        removed, _compact_path = vendor_store.compact_learned_database()
         count, path = vendor_store.learn_from_rows(rows)
-        self.log(f"Learned vendor database updated. New/updated vendors: {count}. Path: {path}")
-        QMessageBox.information(
-            self,
-            "Vendor Learning Complete",
-            f"New/updated learned vendors: {count}\n\nSaved locally:\n{path}\n\nThis keeps only compact vendor hints, not OCR text or PDFs.",
-        )
+        self.log(f"Learned vendor database updated. New/updated vendors: {count}. Removed weak learned vendors: {removed}. Path: {path}")
+        if not silent:
+            QMessageBox.information(
+                self,
+                "Vendor Learning Complete",
+                f"New/updated learned vendors: {count}\nRemoved weak learned vendors: {removed}\n\nSaved locally:\n{path}\n\nThis keeps only compact vendor hints, not OCR text or PDFs.",
+            )
+        return count, removed, path
 
     def show_vendor_database(self):
         self.text_preview.setPlainText(vendor_store.database_summary())
