@@ -1,10 +1,21 @@
 from pathlib import Path
 
 from mailscan2026 import NEW_FEATURE_TABS, __version__
-from mailscan2026.core import document_classifier, ocr_analysis, session_store
+from mailscan2026.core import document_classifier, ocr_analysis, session_store, wiki_content
 from mailscan2026.ui.main_window import MainWindow, StartupProgress
 
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QMessageBox, QPushButton, QTableWidgetItem
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QMessageBox,
+    QProgressDialog,
+    QPushButton,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 SOURCE_PDF_COLUMN = 8
@@ -33,74 +44,34 @@ def apply_new_feature_tab_markers(window: MainWindow) -> None:
             window.tabs.setTabToolTip(index, "New feature added in this version")
 
 
+def install_wiki_patch() -> None:
+    """Add an in-app mini wiki tab for feature list, history, and roadmap."""
+    original_build_ui = MainWindow._build_ui
+
+    def build_ui_with_wiki(self: MainWindow):
+        original_build_ui(self)
+        wiki_tab = QWidget()
+        layout = QVBoxLayout(wiki_tab)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(wiki_content.WIKI_TEXT)
+        layout.addWidget(text)
+        self.tabs.addTab(wiki_tab, "Wiki")
+
+    MainWindow._build_ui = build_ui_with_wiki
+
+
 def install_ocr_summary_patch() -> None:
     """Install the smarter OCR summary and bill/info classification."""
 
     def extract_selected_pdf_text(self: MainWindow):
-        pdf = _selected_pdf_path(self)
-        if not pdf:
+        row = self.table.currentRow()
+        if row < 0:
             QMessageBox.information(self, "No selection", "Select a document first.")
             return
-        if not pdf.exists():
-            QMessageBox.warning(self, "File not found", f"Could not find:\n{pdf}")
-            return
-
-        self.text_preview.setPlainText("Extracting OCR summary, bill/info logic, and text preview...")
-        QApplication.processEvents()
-
-        try:
-            import fitz
-        except Exception as exc:
-            self.text_preview.setPlainText("PyMuPDF is not available. Install requirements and try again.")
-            self.log(f"Text extraction unavailable: {exc}")
-            return
-
-        try:
-            doc = fitz.open(pdf)
-            page_count = doc.page_count
-            page_texts: list[str] = []
-            page_word_counts: list[int] = []
-            raw_page_chunks: list[str] = []
-            max_pages = min(page_count, 5)
-
-            for index in range(page_count):
-                page = doc[index]
-                text = page.get_text("text") or ""
-                clean_text = text.strip()
-                page_texts.append(clean_text)
-                page_word_counts.append(ocr_analysis.count_words(clean_text))
-                if index < max_pages:
-                    raw_page_chunks.append(f"===== PAGE {index + 1} of {page_count} =====\n{clean_text}")
-            doc.close()
-
-            full_text = "\n".join(page_texts)
-            summary = ocr_analysis.build_summary(
-                pdf=pdf,
-                page_count=page_count,
-                preview_pages=max_pages,
-                page_texts=page_texts,
-                page_word_counts=page_word_counts,
-            )
-            classification = document_classifier.classify_document(pdf, full_text, summary.document_type)
-            self.apply_classification_to_selected_row(classification)
-            self.update_dashboard_metrics()
-
-            summary_text = ocr_analysis.render_summary(summary)
-            classification_text = _render_classification(classification)
-
-            raw_preview = "\n\n".join(raw_page_chunks).strip()
-            if not raw_preview:
-                raw_preview = "No extractable text found in the first pages. The PDF may be image-only or OCR quality may be poor."
-            if page_count > max_pages:
-                raw_preview += f"\n\n[Preview limited to first {max_pages} pages of {page_count}.]"
-
-            self.text_preview.setPlainText(
-                f"{summary_text}\n\n{classification_text}\n\n{'=' * 80}\nRAW OCR TEXT PREVIEW\n{'=' * 80}\n\n{raw_preview}"
-            )
-            self.log(f"Classified and extracted OCR preview from: {pdf}")
-        except Exception as exc:
-            self.text_preview.setPlainText(f"Could not extract text preview.\n\n{exc}")
-            self.log(f"Text extraction failed for {pdf}: {exc}")
+        result = _classify_row(self, row, update_preview=True)
+        if result:
+            self.log(f"Classified and extracted OCR preview from: {result['pdf']}")
 
     MainWindow.extract_selected_pdf_text = extract_selected_pdf_text
 
@@ -124,6 +95,9 @@ def install_session_patch() -> None:
         self.classify_selected_button = QPushButton("Classify Selected")
         self.classify_selected_button.clicked.connect(self.classify_selected_document)
         self.classify_selected_button.setEnabled(False)
+        self.classify_all_button = QPushButton("Classify All")
+        self.classify_all_button.clicked.connect(self.classify_all_documents)
+        self.classify_all_button.setToolTip("Classify rows one at a time with a progress bar and cancel option.")
         self.session_status_label = QPushButton("Session: local only")
         self.session_status_label.setEnabled(False)
         self.session_status_label.setToolTip(str(session_store.session_path()))
@@ -133,6 +107,7 @@ def install_session_patch() -> None:
         session_row.addWidget(self.load_session_button)
         session_row.addWidget(self.clear_session_button)
         session_row.addWidget(self.classify_selected_button)
+        session_row.addWidget(self.classify_all_button)
         session_row.addWidget(self.session_status_label)
         session_row.addStretch()
         widget.layout().addLayout(session_row)
@@ -247,8 +222,7 @@ def install_session_patch() -> None:
 
 
 def install_classification_patch() -> None:
-    def apply_classification_to_selected_row(self: MainWindow, classification: document_classifier.Classification):
-        row = self.table.currentRow()
+    def apply_classification_to_row(self: MainWindow, row: int, classification: document_classifier.Classification):
         if row < 0:
             return
         updates = {
@@ -266,16 +240,71 @@ def install_classification_patch() -> None:
             self.table.setItem(row, col, QTableWidgetItem(value))
         self.table.resizeColumnsToContents()
 
+    def apply_classification_to_selected_row(self: MainWindow, classification: document_classifier.Classification):
+        self.apply_classification_to_row(self.table.currentRow(), classification)
+
     def classify_selected_document(self: MainWindow):
-        pdf = _selected_pdf_path(self)
-        if not pdf:
+        row = self.table.currentRow()
+        if row < 0:
             QMessageBox.information(self, "No selection", "Select a document first.")
             return
-        self.extract_selected_pdf_text()
+        _classify_row(self, row, update_preview=True)
+        self.update_dashboard_metrics()
+
+    def classify_all_documents(self: MainWindow):
+        total = self.table.rowCount()
+        if total == 0:
+            QMessageBox.information(self, "No documents", "Import OCR PDFs first.")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Classify All Documents",
+            f"Classify {total} document(s) one at a time?\n\nThis reads PDF text and updates table fields only. It does not modify source PDFs. You can cancel while it runs.",
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        progress = QProgressDialog("Classifying documents...", "Cancel", 0, total, self)
+        progress.setWindowTitle("MailScan Batch Classification")
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        completed = 0
+        failed = 0
+        for row in range(total):
+            if progress.wasCanceled():
+                break
+            self.table.selectRow(row)
+            pdf = _pdf_path_for_row(self, row)
+            progress.setLabelText(f"Classifying {row + 1} of {total}: {pdf.name if pdf else 'missing path'}")
+            QApplication.processEvents()
+            result = _classify_row(self, row, update_preview=False)
+            if result:
+                completed += 1
+            else:
+                failed += 1
+            progress.setValue(row + 1)
+            QApplication.processEvents()
+
+        progress.close()
+        self.normalize_info_amount_cells()
+        self.update_dashboard_metrics()
+        self.update_session_status()
+        self.log(f"Batch classification finished. Completed: {completed}, failed/skipped: {failed}.")
+        QMessageBox.information(
+            self,
+            "Batch Classification Complete",
+            f"Completed: {completed}\nFailed/skipped: {failed}\n\nReview fields before relying on them.",
+        )
 
     def update_classify_button_state(self: MainWindow):
+        has_rows = self.table.rowCount() > 0
         if hasattr(self, "classify_selected_button"):
-            self.classify_selected_button.setEnabled(self.table.rowCount() > 0 and self.table.currentRow() >= 0)
+            self.classify_selected_button.setEnabled(has_rows and self.table.currentRow() >= 0)
+        if hasattr(self, "classify_all_button"):
+            self.classify_all_button.setEnabled(has_rows)
 
     def normalize_info_amount_cells(self: MainWindow):
         for row in range(self.table.rowCount()):
@@ -327,11 +356,74 @@ def install_classification_patch() -> None:
                 labels[label].setText(value)
         self.update_classify_button_state()
 
+    MainWindow.apply_classification_to_row = apply_classification_to_row
     MainWindow.apply_classification_to_selected_row = apply_classification_to_selected_row
     MainWindow.classify_selected_document = classify_selected_document
+    MainWindow.classify_all_documents = classify_all_documents
     MainWindow.update_classify_button_state = update_classify_button_state
     MainWindow.normalize_info_amount_cells = normalize_info_amount_cells
     MainWindow.update_dashboard_metrics = update_dashboard_metrics
+
+
+def _classify_row(window: MainWindow, row: int, update_preview: bool) -> dict[str, object] | None:
+    pdf = _pdf_path_for_row(window, row)
+    if not pdf or not pdf.exists():
+        if update_preview:
+            QMessageBox.warning(window, "File not found", f"Could not find:\n{pdf}")
+        return None
+
+    if update_preview:
+        window.text_preview.setPlainText("Extracting OCR summary, bill/info logic, and text preview...")
+        QApplication.processEvents()
+
+    try:
+        import fitz
+        doc = fitz.open(pdf)
+        page_count = doc.page_count
+        page_texts: list[str] = []
+        page_word_counts: list[int] = []
+        raw_page_chunks: list[str] = []
+        max_pages = min(page_count, 5)
+
+        for index in range(page_count):
+            page = doc[index]
+            text = page.get_text("text") or ""
+            clean_text = text.strip()
+            page_texts.append(clean_text)
+            page_word_counts.append(ocr_analysis.count_words(clean_text))
+            if update_preview and index < max_pages:
+                raw_page_chunks.append(f"===== PAGE {index + 1} of {page_count} =====\n{clean_text}")
+        doc.close()
+
+        full_text = "\n".join(page_texts)
+        summary = ocr_analysis.build_summary(
+            pdf=pdf,
+            page_count=page_count,
+            preview_pages=max_pages,
+            page_texts=page_texts,
+            page_word_counts=page_word_counts,
+        )
+        classification = document_classifier.classify_document(pdf, full_text, summary.document_type)
+        window.apply_classification_to_row(row, classification)
+
+        if update_preview:
+            summary_text = ocr_analysis.render_summary(summary)
+            classification_text = _render_classification(classification)
+            raw_preview = "\n\n".join(raw_page_chunks).strip()
+            if not raw_preview:
+                raw_preview = "No extractable text found in the first pages. The PDF may be image-only or OCR quality may be poor."
+            if page_count > max_pages:
+                raw_preview += f"\n\n[Preview limited to first {max_pages} pages of {page_count}.]"
+            window.text_preview.setPlainText(
+                f"{summary_text}\n\n{classification_text}\n\n{'=' * 80}\nRAW OCR TEXT PREVIEW\n{'=' * 80}\n\n{raw_preview}"
+            )
+
+        return {"pdf": pdf, "classification": classification}
+    except Exception as exc:
+        if update_preview:
+            window.text_preview.setPlainText(f"Could not extract text preview.\n\n{exc}")
+        window.log(f"Classification failed for {pdf}: {exc}")
+        return None
 
 
 def _render_classification(classification: document_classifier.Classification) -> str:
@@ -352,7 +444,10 @@ def _render_classification(classification: document_classifier.Classification) -
 
 
 def _selected_pdf_path(window: MainWindow) -> Path | None:
-    row = window.table.currentRow()
+    return _pdf_path_for_row(window, window.table.currentRow())
+
+
+def _pdf_path_for_row(window: MainWindow, row: int) -> Path | None:
     if row < 0:
         return None
     item = window.table.item(row, SOURCE_PDF_COLUMN)
@@ -403,6 +498,7 @@ def _find_metric_labels(window: MainWindow) -> dict[str, object]:
 
 
 def run_app():
+    install_wiki_patch()
     install_ocr_summary_patch()
     install_session_patch()
     install_classification_patch()
