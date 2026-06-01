@@ -6,7 +6,7 @@ from typing import Callable
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QCheckBox, QGroupBox, QLabel, QMessageBox, QPushButton, QTableWidgetItem, QVBoxLayout
 
-from mailscan2026.core import session_store, settings_store
+from mailscan2026.core import session_store, settings_store, vendor_store
 
 
 def install_startup_automation_tools(main_window_cls, headers: list[str], classify_row: Callable) -> None:
@@ -31,7 +31,7 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
 
         self.pref_auto_classify = QCheckBox("Auto-classify unclassified rows on app start")
         self.pref_auto_classify.setChecked(prefs.auto_classify_unclassified_on_start)
-        self.pref_auto_classify.setToolTip("Classifies only blank/Unknown/Low-confidence rows after session/import loads.")
+        self.pref_auto_classify.setToolTip("Classifies only blank/Unknown/Low-confidence rows after session/import loads without prompting.")
 
         self.pref_auto_preview = QCheckBox("Auto-extract preview for first selected document on app start")
         self.pref_auto_preview.setChecked(prefs.auto_extract_first_preview_on_start)
@@ -39,6 +39,13 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
 
         self.pref_auto_audit = QCheckBox("Auto-generate audit report on app start")
         self.pref_auto_audit.setChecked(prefs.auto_generate_audit_on_start)
+
+        self.pref_auto_learn_vendors = QCheckBox("Auto-learn safe vendor hints on app start")
+        self.pref_auto_learn_vendors.setChecked(prefs.auto_learn_vendors_on_start)
+        self.pref_auto_learn_vendors.setToolTip("Learns compact vendor hints only from safe rows. Does not store OCR text or PDFs.")
+
+        self.pref_quiet_startup = QCheckBox("Quiet startup automation, no OK popups, log summary instead")
+        self.pref_quiet_startup.setChecked(prefs.quiet_startup_automation)
 
         save_button = QPushButton("Save Startup Preferences")
         save_button.clicked.connect(self.save_startup_preferences)
@@ -49,6 +56,8 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
             self.pref_auto_classify,
             self.pref_auto_preview,
             self.pref_auto_audit,
+            self.pref_auto_learn_vendors,
+            self.pref_quiet_startup,
         ]:
             box_layout.addWidget(checkbox)
         box_layout.addWidget(save_button)
@@ -62,12 +71,16 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
             auto_classify_unclassified_on_start=self.pref_auto_classify.isChecked(),
             auto_extract_first_preview_on_start=self.pref_auto_preview.isChecked(),
             auto_generate_audit_on_start=self.pref_auto_audit.isChecked(),
+            auto_learn_vendors_on_start=self.pref_auto_learn_vendors.isChecked(),
+            quiet_startup_automation=self.pref_quiet_startup.isChecked(),
         )
         path = settings_store.save_preferences(prefs)
         self.log(f"Saved startup preferences: {path}")
-        QMessageBox.information(self, "Preferences Saved", f"Saved locally:\n\n{path}")
+        if not prefs.quiet_startup_automation:
+            QMessageBox.information(self, "Preferences Saved", f"Saved locally:\n\n{path}")
 
     def run_startup_checks_with_preferences(self):
+        self.startup_summary_lines = []
         self.log("Startup check: scanning local Git status...")
         report = self._git_status_report()
         self.log(report["details"])
@@ -86,6 +99,7 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
         if prefs.auto_load_session_on_start and info.exists and info.row_count:
             self.load_review_session(silent=True)
             loaded_or_imported = True
+            self.startup_summary_lines.append(f"Loaded saved session: {info.row_count} row(s)")
         elif prefs.auto_import_scan_root_on_start:
             loaded_or_imported = self.import_scan_root_silently()
 
@@ -101,13 +115,19 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
         if prefs.auto_extract_first_preview_on_start and self.table.rowCount() > 0:
             QTimer.singleShot(900, self.auto_extract_first_preview_safely)
 
+        if prefs.auto_learn_vendors_on_start and self.table.rowCount() > 0:
+            QTimer.singleShot(1100, self.auto_learn_vendors_safely)
+
         if prefs.auto_generate_audit_on_start and self.table.rowCount() > 0:
-            QTimer.singleShot(1200, self.auto_generate_audit_safely)
+            QTimer.singleShot(1400, self.auto_generate_audit_safely)
+
+        QTimer.singleShot(1800, self.show_startup_summary_safely)
 
     def import_scan_root_silently(self) -> bool:
         root = Path(str(self.scan_root_edit.text()).strip()) if hasattr(self, "scan_root_edit") else self.scan_root
         if not root.exists():
             self.log(f"Auto-import skipped. Scan root not found: {root}")
+            self.startup_summary_lines.append(f"Auto-import skipped: scan root not found")
             return False
         pdfs = [
             p for p in root.rglob("*_OCR.pdf")
@@ -142,6 +162,7 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
             self.table.selectRow(0)
         self._set_document_buttons_enabled(self.table.rowCount() > 0)
         self.log(f"Auto-imported {len(pdfs)} OCR PDF(s) from scan root: {root}")
+        self.startup_summary_lines.append(f"Auto-imported OCR PDFs: {len(pdfs)}")
         return True
 
     def auto_classify_unclassified_safely(self):
@@ -154,9 +175,11 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
                 rows.append(row)
         if not rows:
             self.log("Auto-classify skipped. No unclassified rows found.")
+            self.startup_summary_lines.append("Auto-classify skipped: no matching rows")
             return
-        self.log(f"Auto-classifying {len(rows)} unclassified row(s).")
-        self._batch_classify_rows(rows, "Auto-classify Unclassified")
+        self.log(f"Auto-classifying {len(rows)} unclassified row(s) without prompt.")
+        completed, failed = self._batch_classify_rows_silent(rows, "Auto-classify Unclassified")
+        self.startup_summary_lines.append(f"Auto-classified rows: {completed}, failed/skipped: {failed}")
 
     def auto_extract_first_preview_safely(self):
         if self.table.rowCount() <= 0:
@@ -164,11 +187,62 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
         self.table.selectRow(0)
         self.extract_selected_pdf_text()
         self.log("Auto-extracted first document preview.")
+        self.startup_summary_lines.append("Auto-extracted first preview")
+
+    def auto_learn_vendors_safely(self):
+        if self.table.rowCount() <= 0:
+            return
+        if hasattr(self, "refresh_review_flags"):
+            self.refresh_review_flags()
+        rows = self.table_rows_as_dicts()
+        removed, compact_path = vendor_store.compact_learned_database()
+        learned_count, learned_path = vendor_store.learn_from_rows(rows)
+        self.log(f"Auto-learned vendors. New/updated: {learned_count}. Removed weak learned vendors: {removed}. Path: {learned_path}")
+        self.startup_summary_lines.append(f"Auto-learned vendors: {learned_count} new/updated, {removed} cleaned")
 
     def auto_generate_audit_safely(self):
         if hasattr(self, "generate_audit_report"):
-            self.generate_audit_report()
+            summary = self.generate_audit_report(silent=True) if _accepts_silent(self.generate_audit_report) else None
+            if summary:
+                self.startup_summary_lines.append(
+                    f"Audit: {summary.total_rows} rows, {summary.flagged_rows} flagged, payable total ${summary.total_amount:,.2f}"
+                )
+            else:
+                self.startup_summary_lines.append("Auto-generated audit report")
             self.log("Auto-generated audit report.")
+
+    def show_startup_summary_safely(self):
+        prefs = settings_store.load_preferences()
+        if not getattr(self, "startup_summary_lines", None):
+            return
+        summary = "Startup automation summary:\n" + "\n".join(f"- {line}" for line in self.startup_summary_lines)
+        self.log(summary)
+        if hasattr(self, "text_preview"):
+            current = self.text_preview.toPlainText().strip()
+            if not current or current.startswith("Vendor Database"):
+                self.text_preview.setPlainText(summary)
+        if not prefs.quiet_startup_automation:
+            QMessageBox.information(self, "Startup Automation Summary", summary)
+
+    def batch_classify_rows_silent(self, rows: list[int], title: str) -> tuple[int, int]:
+        completed = 0
+        failed = 0
+        for row in rows:
+            self.table.selectRow(row)
+            result = classify_row(self, row, update_preview=False)
+            if result:
+                completed += 1
+                if hasattr(self, "refresh_review_flags_for_row"):
+                    self.refresh_review_flags_for_row(row)
+            else:
+                failed += 1
+            QApplication_process_events_safe()
+        self.normalize_info_amount_cells()
+        if hasattr(self, "refresh_review_flags"):
+            self.refresh_review_flags()
+        self.update_dashboard_metrics()
+        self.log(f"{title} finished silently. Completed: {completed}, failed/skipped: {failed}.")
+        return completed, failed
 
     main_window_cls._settings_tab = settings_tab_with_automation
     main_window_cls.save_startup_preferences = save_startup_preferences
@@ -176,7 +250,26 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
     main_window_cls.import_scan_root_silently = import_scan_root_silently
     main_window_cls.auto_classify_unclassified_safely = auto_classify_unclassified_safely
     main_window_cls.auto_extract_first_preview_safely = auto_extract_first_preview_safely
+    main_window_cls.auto_learn_vendors_safely = auto_learn_vendors_safely
     main_window_cls.auto_generate_audit_safely = auto_generate_audit_safely
+    main_window_cls.show_startup_summary_safely = show_startup_summary_safely
+    main_window_cls._batch_classify_rows_silent = batch_classify_rows_silent
+
+
+def QApplication_process_events_safe() -> None:
+    try:
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+    except Exception:
+        pass
+
+
+def _accepts_silent(fn: Callable) -> bool:
+    try:
+        import inspect
+        return "silent" in inspect.signature(fn).parameters
+    except Exception:
+        return False
 
 
 def _cell_text_by_headers(window, headers: list[str], row: int, header: str) -> str:
