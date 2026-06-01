@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-APP_DIR_NAME = "MailScan2026"
+LOCAL_DIR_NAME = ".local"
 SESSION_FILE_NAME = "review_session.json"
 
 
@@ -18,8 +18,15 @@ class SessionInfo:
     saved_at: str = ""
 
 
+def repo_root() -> Path:
+    # session_store.py -> core -> mailscan2026 -> repo root
+    return Path(__file__).resolve().parents[2]
+
+
 def app_data_dir() -> Path:
-    return Path.home() / "AppData" / "Local" / APP_DIR_NAME
+    # Keep local/private data inside the project folder, but under .local
+    # so Git ignores it and it stays off GitHub.
+    return repo_root() / LOCAL_DIR_NAME
 
 
 def session_path() -> Path:
@@ -56,6 +63,7 @@ def save_session(rows: list[dict[str, str]]) -> Path:
         "app": "MailScan 2026",
         "schema": 1,
         "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "storage": "repo-local .local folder",
         "rows": rows,
     }
     path = session_path()
