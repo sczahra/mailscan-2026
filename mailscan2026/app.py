@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from mailscan2026 import NEW_FEATURE_TABS, __version__
-from mailscan2026.core import ocr_analysis, session_store
+from mailscan2026.core import document_classifier, ocr_analysis, session_store
 from mailscan2026.ui.main_window import MainWindow, StartupProgress
 
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMessageBox, QPushButton, QTableWidgetItem
@@ -12,6 +12,13 @@ HEADERS = [
     "Status", "Category", "Sender", "Type", "Amount", "Due Date",
     "Confidence", "Needs Review", "Source PDF", "Notes"
 ]
+DASHBOARD_METRIC_TEXT = {
+    "Documents": "0",
+    "Needs Review": "0",
+    "Total Amount": "—",
+    "Next Due": "—",
+    "Last Import": "—",
+}
 
 
 def apply_new_feature_tab_markers(window: MainWindow) -> None:
@@ -27,7 +34,7 @@ def apply_new_feature_tab_markers(window: MainWindow) -> None:
 
 
 def install_ocr_summary_patch() -> None:
-    """Install the v0.4.2 smarter OCR summary without rewriting the whole UI module."""
+    """Install the smarter OCR summary and bill/info classification."""
 
     def extract_selected_pdf_text(self: MainWindow):
         pdf = _selected_pdf_path(self)
@@ -38,7 +45,7 @@ def install_ocr_summary_patch() -> None:
             QMessageBox.warning(self, "File not found", f"Could not find:\n{pdf}")
             return
 
-        self.text_preview.setPlainText("Extracting smarter OCR summary and text preview...")
+        self.text_preview.setPlainText("Extracting OCR summary, bill/info logic, and text preview...")
         QApplication.processEvents()
 
         try:
@@ -66,6 +73,7 @@ def install_ocr_summary_patch() -> None:
                     raw_page_chunks.append(f"===== PAGE {index + 1} of {page_count} =====\n{clean_text}")
             doc.close()
 
+            full_text = "\n".join(page_texts)
             summary = ocr_analysis.build_summary(
                 pdf=pdf,
                 page_count=page_count,
@@ -73,7 +81,12 @@ def install_ocr_summary_patch() -> None:
                 page_texts=page_texts,
                 page_word_counts=page_word_counts,
             )
+            classification = document_classifier.classify_document(pdf, full_text, summary.document_type)
+            self.apply_classification_to_selected_row(classification)
+            self.update_dashboard_metrics()
+
             summary_text = ocr_analysis.render_summary(summary)
+            classification_text = _render_classification(classification)
 
             raw_preview = "\n\n".join(raw_page_chunks).strip()
             if not raw_preview:
@@ -82,9 +95,9 @@ def install_ocr_summary_patch() -> None:
                 raw_preview += f"\n\n[Preview limited to first {max_pages} pages of {page_count}.]"
 
             self.text_preview.setPlainText(
-                f"{summary_text}\n\n{'=' * 80}\nRAW OCR TEXT PREVIEW\n{'=' * 80}\n\n{raw_preview}"
+                f"{summary_text}\n\n{classification_text}\n\n{'=' * 80}\nRAW OCR TEXT PREVIEW\n{'=' * 80}\n\n{raw_preview}"
             )
-            self.log(f"Extracted smarter OCR summary and text preview from: {pdf}")
+            self.log(f"Classified and extracted OCR preview from: {pdf}")
         except Exception as exc:
             self.text_preview.setPlainText(f"Could not extract text preview.\n\n{exc}")
             self.log(f"Text extraction failed for {pdf}: {exc}")
@@ -97,6 +110,7 @@ def install_session_patch() -> None:
 
     original_documents_tab = MainWindow._documents_tab
     original_run_startup_checks = MainWindow.run_startup_checks
+    original_import_ocr_pdfs = MainWindow.import_ocr_pdfs
 
     def documents_tab_with_session(self: MainWindow):
         widget = original_documents_tab(self)
@@ -107,6 +121,9 @@ def install_session_patch() -> None:
         self.load_session_button.clicked.connect(self.load_review_session)
         self.clear_session_button = QPushButton("Clear Session")
         self.clear_session_button.clicked.connect(self.clear_review_session)
+        self.classify_selected_button = QPushButton("Classify Selected")
+        self.classify_selected_button.clicked.connect(self.classify_selected_document)
+        self.classify_selected_button.setEnabled(False)
         self.session_status_label = QPushButton("Session: local only")
         self.session_status_label.setEnabled(False)
         self.session_status_label.setToolTip(str(session_store.session_path()))
@@ -115,11 +132,19 @@ def install_session_patch() -> None:
         session_row.addWidget(self.save_session_button)
         session_row.addWidget(self.load_session_button)
         session_row.addWidget(self.clear_session_button)
+        session_row.addWidget(self.classify_selected_button)
         session_row.addWidget(self.session_status_label)
         session_row.addStretch()
         widget.layout().addLayout(session_row)
 
+        self.table.itemSelectionChanged.connect(self.update_dashboard_metrics)
         return widget
+
+    def import_ocr_pdfs_with_metrics(self: MainWindow):
+        original_import_ocr_pdfs(self)
+        self.normalize_info_amount_cells()
+        self.update_dashboard_metrics()
+        self.update_classify_button_state()
 
     def run_startup_checks_with_session(self: MainWindow):
         original_run_startup_checks(self)
@@ -127,6 +152,8 @@ def install_session_patch() -> None:
         info = session_store.session_info()
         if info.exists and info.row_count:
             self.load_review_session(silent=True)
+        else:
+            self.update_dashboard_metrics()
 
     def table_rows_as_dicts(self: MainWindow) -> list[dict[str, str]]:
         rows: list[dict[str, str]] = []
@@ -150,6 +177,9 @@ def install_session_patch() -> None:
         if self.table.rowCount() > 0:
             self.table.selectRow(0)
         self._set_document_buttons_enabled(self.table.rowCount() > 0)
+        self.update_classify_button_state()
+        self.normalize_info_amount_cells()
+        self.update_dashboard_metrics()
 
     def save_review_session(self: MainWindow):
         rows = self.table_rows_as_dicts()
@@ -169,6 +199,7 @@ def install_session_patch() -> None:
 
         if not rows:
             self.update_session_status()
+            self.update_dashboard_metrics()
             if not silent:
                 QMessageBox.information(self, "No Session", "No saved local review session was found.")
             return
@@ -205,6 +236,7 @@ def install_session_patch() -> None:
         self.session_status_label.setToolTip(str(info.path))
 
     MainWindow._documents_tab = documents_tab_with_session
+    MainWindow.import_ocr_pdfs = import_ocr_pdfs_with_metrics
     MainWindow.run_startup_checks = run_startup_checks_with_session
     MainWindow.table_rows_as_dicts = table_rows_as_dicts
     MainWindow.populate_table_from_rows = populate_table_from_rows
@@ -212,6 +244,111 @@ def install_session_patch() -> None:
     MainWindow.load_review_session = load_review_session
     MainWindow.clear_review_session = clear_review_session
     MainWindow.update_session_status = update_session_status
+
+
+def install_classification_patch() -> None:
+    def apply_classification_to_selected_row(self: MainWindow, classification: document_classifier.Classification):
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        updates = {
+            "Category": classification.category,
+            "Sender": classification.sender,
+            "Type": classification.doc_type,
+            "Amount": classification.amount if classification.is_bill else "—",
+            "Due Date": classification.due_date,
+            "Confidence": classification.confidence,
+            "Needs Review": classification.needs_review,
+            "Notes": classification.notes,
+        }
+        for header, value in updates.items():
+            col = HEADERS.index(header)
+            self.table.setItem(row, col, QTableWidgetItem(value))
+        self.table.resizeColumnsToContents()
+
+    def classify_selected_document(self: MainWindow):
+        pdf = _selected_pdf_path(self)
+        if not pdf:
+            QMessageBox.information(self, "No selection", "Select a document first.")
+            return
+        self.extract_selected_pdf_text()
+
+    def update_classify_button_state(self: MainWindow):
+        if hasattr(self, "classify_selected_button"):
+            self.classify_selected_button.setEnabled(self.table.rowCount() > 0 and self.table.currentRow() >= 0)
+
+    def normalize_info_amount_cells(self: MainWindow):
+        for row in range(self.table.rowCount()):
+            amount_item = self.table.item(row, HEADERS.index("Amount"))
+            type_item = self.table.item(row, HEADERS.index("Type"))
+            notes_item = self.table.item(row, HEADERS.index("Notes"))
+            amount = amount_item.text().strip() if amount_item else ""
+            doc_type = type_item.text().lower().strip() if type_item else ""
+            notes = notes_item.text().lower().strip() if notes_item else ""
+            info_like = any(word in doc_type or word in notes for word in ["info", "notice", "usps", "mail", "no payable"])
+            if info_like and amount in ("", "$0.00", "0", "0.00"):
+                self.table.setItem(row, HEADERS.index("Amount"), QTableWidgetItem("—"))
+
+    def update_dashboard_metrics(self: MainWindow):
+        labels = _find_metric_labels(self)
+        rows = self.table.rowCount() if hasattr(self, "table") else 0
+        review_count = 0
+        bill_count = 0
+        total_amount = 0.0
+        due_dates: list[str] = []
+
+        if hasattr(self, "table"):
+            for row in range(self.table.rowCount()):
+                needs = _cell_text(self, row, "Needs Review").lower()
+                amount_text = _cell_text(self, row, "Amount")
+                due_text = _cell_text(self, row, "Due Date")
+                doc_type = _cell_text(self, row, "Type").lower()
+                notes = _cell_text(self, row, "Notes").lower()
+                if needs in ("yes", "true", "1"):
+                    review_count += 1
+                amount_value = _parse_amount(amount_text)
+                if amount_value is not None:
+                    bill_count += 1
+                    total_amount += amount_value
+                    if due_text:
+                        due_dates.append(due_text)
+                elif any(word in doc_type or word in notes for word in ["informational", "notice", "usps", "no payable"]):
+                    pass
+
+        values = {
+            "Documents": str(rows),
+            "Needs Review": str(review_count),
+            "Total Amount": f"${total_amount:,.2f}" if bill_count else "—",
+            "Next Due": sorted(due_dates)[0] if due_dates else "—",
+            "Last Import": f"{rows} docs" if rows else "—",
+        }
+        for label, value in values.items():
+            if label in labels:
+                labels[label].setText(value)
+        self.update_classify_button_state()
+
+    MainWindow.apply_classification_to_selected_row = apply_classification_to_selected_row
+    MainWindow.classify_selected_document = classify_selected_document
+    MainWindow.update_classify_button_state = update_classify_button_state
+    MainWindow.normalize_info_amount_cells = normalize_info_amount_cells
+    MainWindow.update_dashboard_metrics = update_dashboard_metrics
+
+
+def _render_classification(classification: document_classifier.Classification) -> str:
+    amount = classification.amount if classification.is_bill and classification.amount else "— informational / no payable amount detected"
+    return "\n".join([
+        "BILL / INFORMATIONAL CLASSIFICATION",
+        "=" * 80,
+        f"Category: {classification.category}",
+        f"Sender / Entity: {classification.sender}",
+        f"Type: {classification.doc_type}",
+        f"Bill vs Info: {'Bill / payable' if classification.is_bill else 'Informational / no payable amount'}",
+        f"Amount: {amount}",
+        f"Due Date: {classification.due_date or '—'}",
+        f"Confidence: {classification.confidence}",
+        f"Needs Review: {classification.needs_review}",
+        f"Notes: {classification.notes}",
+    ])
 
 
 def _selected_pdf_path(window: MainWindow) -> Path | None:
@@ -224,9 +361,51 @@ def _selected_pdf_path(window: MainWindow) -> Path | None:
     return Path(item.text().strip())
 
 
+def _cell_text(window: MainWindow, row: int, header: str) -> str:
+    col = HEADERS.index(header)
+    item = window.table.item(row, col)
+    return item.text().strip() if item else ""
+
+
+def _parse_amount(text: str) -> float | None:
+    cleaned = text.strip().replace("$", "").replace(",", "")
+    if cleaned in ("", "—", "-", "0", "0.00"):
+        return None
+    try:
+        value = float(cleaned)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _find_metric_labels(window: MainWindow) -> dict[str, object]:
+    labels: dict[str, object] = {}
+    if not hasattr(window, "tabs"):
+        return labels
+    dashboard = window.tabs.widget(0)
+    if not dashboard:
+        return labels
+    for group in dashboard.findChildren(object):
+        try:
+            title = group.title()
+        except Exception:
+            continue
+        if title in DASHBOARD_METRIC_TEXT:
+            children = group.findChildren(object)
+            for child in children:
+                try:
+                    if child.objectName() == "MetricValue":
+                        labels[title] = child
+                        break
+                except Exception:
+                    pass
+    return labels
+
+
 def run_app():
     install_ocr_summary_patch()
     install_session_patch()
+    install_classification_patch()
 
     app = QApplication([])
     app.setApplicationName("MailScan 2026")
