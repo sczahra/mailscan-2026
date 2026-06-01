@@ -60,12 +60,14 @@ def build_flags(row: dict[str, str]) -> list[str]:
     if "bill / payable" in type_lower and amount_value is None:
         flags.append("Payable bill without amount")
 
-    if any(label in type_lower for label in ["statement / possible balance", "medical / insurance statement"]):
-        if amount_value is not None and "payable" not in notes_lower:
-            flags.append("Amount found but payable context unclear")
+    if "statement / possible balance" in type_lower:
+        flags.append("Possible balance, not counted as payable")
 
-    if ("bill" in type_lower or "statement" in type_lower) and amount_value is None and "informational" not in type_lower:
-        flags.append("Bill/Statement without payable amount")
+    if "medical / possible payable" in type_lower:
+        flags.append("Medical possible payable, manual review needed")
+
+    if amount_value is not None and "bill / payable" not in type_lower:
+        flags.append("Amount found but payable context unclear")
 
     info_like = any(word in f"{doc_type} {notes}".lower() for word in ["informational", "notice", "usps", "no payable"])
     if info_like and amount in ("$0.00", "0", "0.00"):
