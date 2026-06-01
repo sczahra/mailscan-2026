@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -397,7 +398,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "File not found", f"Could not find:\n{pdf}")
             return
 
-        self.text_preview.setPlainText("Extracting text preview...")
+        self.text_preview.setPlainText("Extracting text preview and OCR quality summary...")
         QApplication.processEvents()
 
         try:
@@ -410,24 +411,149 @@ class MainWindow(QMainWindow):
         try:
             doc = fitz.open(pdf)
             page_count = doc.page_count
-            chunks: list[str] = []
+            page_texts: list[str] = []
+            page_word_counts: list[int] = []
+            raw_page_chunks: list[str] = []
             max_pages = min(page_count, 5)
-            for index in range(max_pages):
+
+            for index in range(page_count):
                 page = doc[index]
                 text = page.get_text("text") or ""
-                chunks.append(f"===== PAGE {index + 1} of {page_count} =====\n{text.strip()}")
+                clean_text = text.strip()
+                page_texts.append(clean_text)
+                page_word_counts.append(self._count_words(clean_text))
+                if index < max_pages:
+                    raw_page_chunks.append(f"===== PAGE {index + 1} of {page_count} =====\n{clean_text}")
             doc.close()
 
-            preview = "\n\n".join(chunks).strip()
-            if not preview:
-                preview = "No extractable text found in the first pages. The PDF may be image-only or OCR quality may be poor."
+            full_text = "\n".join(page_texts)
+            total_words = sum(page_word_counts)
+            low_text_pages = [i + 1 for i, count in enumerate(page_word_counts) if count < 8]
+            blank_pages = [i + 1 for i, count in enumerate(page_word_counts) if count == 0]
+            quality = self._estimate_ocr_quality(total_words, page_count, low_text_pages)
+            tracking_numbers = self._find_tracking_numbers(full_text)
+            dates = self._find_dates(full_text)
+            amounts = self._find_amounts(full_text)
+
+            summary = self._build_ocr_summary(
+                pdf=pdf,
+                page_count=page_count,
+                max_pages=max_pages,
+                total_words=total_words,
+                low_text_pages=low_text_pages,
+                blank_pages=blank_pages,
+                quality=quality,
+                tracking_numbers=tracking_numbers,
+                dates=dates,
+                amounts=amounts,
+            )
+
+            raw_preview = "\n\n".join(raw_page_chunks).strip()
+            if not raw_preview:
+                raw_preview = "No extractable text found in the first pages. The PDF may be image-only or OCR quality may be poor."
             if page_count > max_pages:
-                preview += f"\n\n[Preview limited to first {max_pages} pages of {page_count}.]"
-            self.text_preview.setPlainText(preview)
-            self.log(f"Extracted text preview from: {pdf}")
+                raw_preview += f"\n\n[Preview limited to first {max_pages} pages of {page_count}.]"
+
+            self.text_preview.setPlainText(f"{summary}\n\n{'=' * 80}\nRAW OCR TEXT PREVIEW\n{'=' * 80}\n\n{raw_preview}")
+            self.log(f"Extracted OCR quality summary and text preview from: {pdf}")
         except Exception as exc:
             self.text_preview.setPlainText(f"Could not extract text preview.\n\n{exc}")
             self.log(f"Text extraction failed for {pdf}: {exc}")
+
+    def _count_words(self, text: str) -> int:
+        return len(re.findall(r"\b[A-Za-z0-9][A-Za-z0-9'/-]*\b", text))
+
+    def _estimate_ocr_quality(self, total_words: int, page_count: int, low_text_pages: list[int]) -> str:
+        if page_count <= 0 or total_words == 0:
+            return "Weak / image-only"
+        words_per_page = total_words / page_count
+        low_ratio = len(low_text_pages) / page_count
+        if words_per_page >= 80 and low_ratio <= 0.30:
+            return "Good"
+        if words_per_page >= 25 and low_ratio <= 0.60:
+            return "Fair"
+        return "Weak / needs review"
+
+    def _find_tracking_numbers(self, text: str) -> list[str]:
+        matches = re.findall(r"\b(?:9\d{19,21}|\d{20,22})\b", text)
+        return self._unique_limited(matches, 10)
+
+    def _find_dates(self, text: str) -> list[str]:
+        patterns = [
+            r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+            r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{1,2}/\d{1,2}/\d{2,4}\b",
+            r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b",
+        ]
+        matches: list[str] = []
+        for pattern in patterns:
+            matches.extend(re.findall(pattern, text, flags=re.IGNORECASE))
+        return self._unique_limited(matches, 12)
+
+    def _find_amounts(self, text: str) -> list[str]:
+        matches = re.findall(r"\$\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?", text)
+        return self._unique_limited(matches, 12)
+
+    def _unique_limited(self, values: list[str], limit: int) -> list[str]:
+        seen: set[str] = set()
+        output: list[str] = []
+        for value in values:
+            clean = " ".join(str(value).split())
+            key = clean.lower()
+            if clean and key not in seen:
+                seen.add(key)
+                output.append(clean)
+            if len(output) >= limit:
+                break
+        return output
+
+    def _page_list_preview(self, pages: list[int], limit: int = 12) -> str:
+        if not pages:
+            return "None detected"
+        shown = ", ".join(str(page) for page in pages[:limit])
+        if len(pages) > limit:
+            shown += f", +{len(pages) - limit} more"
+        return shown
+
+    def _value_list_preview(self, label: str, values: list[str]) -> str:
+        if not values:
+            return f"{label}: None detected"
+        lines = [f"{label}:"]
+        lines.extend(f"- {value}" for value in values)
+        return "\n".join(lines)
+
+    def _build_ocr_summary(
+        self,
+        pdf: Path,
+        page_count: int,
+        max_pages: int,
+        total_words: int,
+        low_text_pages: list[int],
+        blank_pages: list[int],
+        quality: str,
+        tracking_numbers: list[str],
+        dates: list[str],
+        amounts: list[str],
+    ) -> str:
+        return "\n".join([
+            "OCR / TEXT PREVIEW SUMMARY",
+            "=" * 80,
+            f"Source: {pdf.name}",
+            f"Folder: {pdf.parent}",
+            f"Pages: {page_count}",
+            f"Preview shown: first {max_pages} page(s)",
+            f"Total extracted words: {total_words}",
+            f"OCR Quality: {quality}",
+            f"Blank pages: {self._page_list_preview(blank_pages)}",
+            f"Low-text pages: {self._page_list_preview(low_text_pages)}",
+            "",
+            self._value_list_preview("Possible tracking / article numbers", tracking_numbers),
+            "",
+            self._value_list_preview("Possible dates", dates),
+            "",
+            self._value_list_preview("Possible dollar amounts", amounts),
+            "",
+            "Note: This is a helper summary, not a final classification. Review the source PDF before relying on extracted details.",
+        ])
 
     def run_startup_checks(self):
         self.log("Startup check: scanning local Git status...")
