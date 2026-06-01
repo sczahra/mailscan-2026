@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build artifacts
+build/
+dist/
+*.spec
+release/
+installer/
+
+# Local settings and logs
+.local/
+settings.local.json
+*.local.json
+*.log
+
+# MailScan private/local data
+Scans/
+*_OCR.pdf
+*.pdf
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png
+*.bmp
+
+# Financial exports / trackers
+*_review.csv
+*_review.xlsx
+bill_review.csv
+bill_review.xlsx
+Postal_Mail_Bill_Tracker*.xlsx
+*.xlsm
+
+# Windows/editor
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
