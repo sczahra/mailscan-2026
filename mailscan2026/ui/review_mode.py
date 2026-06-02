@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from collections import Counter
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QTableWidgetItem
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QAbstractItemView, QHBoxLayout, QMessageBox, QPushButton, QTableWidgetItem
 
 
 FILTERS = ["All", "Urgent", "Due Soon", "Review", "Payable", "Info", "Reviewed", "Ignored"]
@@ -57,8 +56,8 @@ def install_review_mode(main_window_cls, headers: list[str]) -> None:
         return widget
 
     def install_selection_table_style(self) -> None:
-        self.table.setSelectionBehavior(self.table.SelectRows)
-        self.table.setSelectionMode(self.table.SingleSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setStyleSheet(
             self.table.styleSheet()
             + """
