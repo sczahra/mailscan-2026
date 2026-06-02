@@ -1,12 +1,14 @@
+from pathlib import Path
+
 from mailscan2026 import NEW_FEATURE_TABS, __version__
 from mailscan2026.core import branding, review_quality, startup_automation
 from mailscan2026.ui.main_window import MainWindow, StartupProgress
 
+import mailscan2026.app as base_app
 from mailscan2026.app import (
     HEADERS,
     _cell_text,
     _classify_row,
-    _pdf_path_for_row,
     apply_new_feature_tab_markers,
     install_classification_patch,
     install_ocr_summary_patch,
@@ -16,6 +18,24 @@ from mailscan2026.app import (
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel
+
+
+def _dynamic_pdf_path_for_row(window: MainWindow, row: int) -> Path | None:
+    """Find Source PDF by header name so adding/reordering columns cannot break file actions."""
+    if row < 0 or "Source PDF" not in HEADERS:
+        return None
+    source_col = HEADERS.index("Source PDF")
+    item = window.table.item(row, source_col)
+    if not item or not item.text().strip():
+        return None
+    return Path(item.text().strip())
+
+
+def install_safe_column_patch() -> None:
+    # _classify_row lives in mailscan2026.app and looks up _pdf_path_for_row from
+    # that module's globals at runtime. Replacing it here fixes file actions without
+    # relying on a fragile numeric column index.
+    base_app._pdf_path_for_row = _dynamic_pdf_path_for_row
 
 
 def install_branding_patch() -> None:
@@ -34,6 +54,7 @@ def install_branding_patch() -> None:
 
 def run_app():
     install_wiki_patch()
+    install_safe_column_patch()
     install_branding_patch()
     install_ocr_summary_patch()
     install_session_patch()
@@ -42,7 +63,7 @@ def run_app():
         MainWindow,
         HEADERS,
         _classify_row,
-        _pdf_path_for_row,
+        _dynamic_pdf_path_for_row,
         _cell_text,
     )
     startup_automation.install_startup_automation_tools(
