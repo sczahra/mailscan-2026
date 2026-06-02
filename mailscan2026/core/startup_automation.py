@@ -197,13 +197,13 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
         rows = self.table_rows_as_dicts()
         removed, _compact_path = vendor_store.compact_learned_database()
         learned_count, learned_path = vendor_store.learn_from_rows(rows)
-        candidate_added, candidate_updated, candidate_path = vendor_candidates.collect_from_rows(rows)
+        candidate_added, candidate_updated, candidate_rejected, candidate_path = vendor_candidates.collect_from_rows(rows)
         self.log(
             f"Auto-learned vendors. New/updated: {learned_count}. Removed weak learned vendors: {removed}. "
-            f"Candidate added/updated: {candidate_added}/{candidate_updated}. Path: {learned_path}"
+            f"Candidate added/updated/rejected: {candidate_added}/{candidate_updated}/{candidate_rejected}. Path: {learned_path}"
         )
         self.startup_summary_lines.append(
-            f"Auto-learned vendors: {learned_count} new/updated, {removed} cleaned, {candidate_added} candidates added, {candidate_updated} candidates updated"
+            f"Auto-learned vendors: {learned_count} new/updated, {removed} cleaned, {candidate_added} candidates added, {candidate_updated} candidates updated, {candidate_rejected} rejected"
         )
 
     def auto_generate_audit_safely(self):
