@@ -1,5 +1,5 @@
 from mailscan2026 import NEW_FEATURE_TABS, __version__
-from mailscan2026.core import review_quality, startup_automation
+from mailscan2026.core import branding, review_quality, startup_automation
 from mailscan2026.ui.main_window import MainWindow, StartupProgress
 
 from mailscan2026.app import (
@@ -14,11 +14,27 @@ from mailscan2026.app import (
     install_wiki_patch,
 )
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLabel
+
+
+def install_branding_patch() -> None:
+    original_build_ui = MainWindow._build_ui
+
+    def build_ui_with_branding(self: MainWindow):
+        original_build_ui(self)
+        footer = QLabel(f'{branding.copyright_text()}   |   <a href="{branding.BUY_ME_A_COFFEE_URL}">Buy me a coffee</a>')
+        footer.setOpenExternalLinks(True)
+        footer.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        footer.setToolTip(branding.BUY_ME_A_COFFEE_URL)
+        self.centralWidget().layout().addWidget(footer)
+
+    MainWindow._build_ui = build_ui_with_branding
 
 
 def run_app():
     install_wiki_patch()
+    install_branding_patch()
     install_ocr_summary_patch()
     install_session_patch()
     install_classification_patch()
