@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from collections import Counter
 
-from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QTableWidgetItem
 
 
 FILTERS = ["All", "Urgent", "Due Soon", "Review", "Payable", "Info", "Reviewed", "Ignored"]
+SELECTION_HIGHLIGHT = QColor("#111111")
+SELECTION_TEXT = QColor("#ffffff")
 
 
 def install_review_mode(main_window_cls, headers: list[str]) -> None:
@@ -46,7 +50,64 @@ def install_review_mode(main_window_cls, headers: list[str]) -> None:
         filter_row.addStretch()
         widget.layout().insertLayout(2, filter_row)
         self.set_filter_button_checked("All")
+
+        self.current_review_row = -1
+        self.table.itemSelectionChanged.connect(self.update_selected_row_highlight)
+        self.install_selection_table_style()
         return widget
+
+    def install_selection_table_style(self) -> None:
+        self.table.setSelectionBehavior(self.table.SelectRows)
+        self.table.setSelectionMode(self.table.SingleSelection)
+        self.table.setStyleSheet(
+            self.table.styleSheet()
+            + """
+            QTableWidget::item:selected {
+                background: #111111;
+                color: #ffffff;
+                border-top: 2px solid #000000;
+                border-bottom: 2px solid #000000;
+            }
+            QTableWidget::item:focus {
+                border: 2px solid #000000;
+            }
+            """
+        )
+
+    def update_selected_row_highlight(self) -> None:
+        row = self.table.currentRow()
+        if getattr(self, "current_review_row", -1) == row:
+            return
+        previous = getattr(self, "current_review_row", -1)
+        self.current_review_row = row
+        if previous >= 0 and previous < self.table.rowCount() and hasattr(self, "apply_priority_for_row"):
+            self.apply_priority_for_row(previous)
+        if row >= 0:
+            self.emphasize_selected_row(row)
+            self.update_selected_row_label(row)
+
+    def emphasize_selected_row(self, row: int) -> None:
+        if row < 0 or row >= self.table.rowCount():
+            return
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row, col)
+            if item is None:
+                item = QTableWidgetItem("")
+                self.table.setItem(row, col, item)
+            item.setBackground(SELECTION_HIGHLIGHT)
+            item.setForeground(SELECTION_TEXT)
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
+        self.table.viewport().update()
+
+    def update_selected_row_label(self, row: int) -> None:
+        sender = cell_text(self, row, "Sender") or "Unknown sender"
+        priority = cell_text(self, row, "Priority") or "No priority"
+        doc_type = cell_text(self, row, "Type") or "Unknown type"
+        amount = cell_text(self, row, "Amount") or "—"
+        due = cell_text(self, row, "Due Date") or "—"
+        self.log(f"Selected row {row + 1}: {priority} | {sender} | {doc_type} | Amount {amount} | Due {due}")
 
     def set_filter_button_checked(self, name: str) -> None:
         for filter_name, button in getattr(self, "filter_buttons", {}).items():
@@ -62,6 +123,13 @@ def install_review_mode(main_window_cls, headers: list[str]) -> None:
         self.log(f"Applied table filter: {filter_name}")
         visible = sum(1 for row in range(self.table.rowCount()) if not self.table.isRowHidden(row))
         self.text_preview.setPlainText(review_status_summary(self, filter_name, visible))
+        row = self.table.currentRow()
+        if row >= 0 and self.table.isRowHidden(row):
+            next_row = find_next_row(self, lambda r: not self.table.isRowHidden(r))
+            if next_row is not None:
+                select_and_preview(self, next_row)
+        else:
+            self.update_selected_row_highlight()
 
     def clear_table_filter(self) -> None:
         self.apply_table_filter("All")
@@ -84,24 +152,30 @@ def install_review_mode(main_window_cls, headers: list[str]) -> None:
     original_mark_ignored = getattr(main_window_cls, "mark_selected_ignored", None)
 
     def mark_selected_reviewed_and_advance(self):
+        row_before = self.table.currentRow()
         if original_mark_reviewed is not None:
             original_mark_reviewed(self)
         else:
-            set_cell_text(self, self.table.currentRow(), "Status", "Reviewed")
-        if hasattr(self, "apply_priority_for_row"):
-            self.apply_priority_for_row(self.table.currentRow())
+            set_cell_text(self, row_before, "Status", "Reviewed")
+        if row_before >= 0 and hasattr(self, "apply_priority_for_row"):
+            self.apply_priority_for_row(row_before)
         self.jump_to_next_priority("Review")
 
     def mark_selected_ignored_and_advance(self):
+        row_before = self.table.currentRow()
         if original_mark_ignored is not None:
             original_mark_ignored(self)
         else:
-            set_cell_text(self, self.table.currentRow(), "Status", "Ignored")
-        if hasattr(self, "apply_priority_for_row"):
-            self.apply_priority_for_row(self.table.currentRow())
+            set_cell_text(self, row_before, "Status", "Ignored")
+        if row_before >= 0 and hasattr(self, "apply_priority_for_row"):
+            self.apply_priority_for_row(row_before)
         self.jump_to_next_priority("Review")
 
     main_window_cls._documents_tab = documents_tab_with_review_mode
+    main_window_cls.install_selection_table_style = install_selection_table_style
+    main_window_cls.update_selected_row_highlight = update_selected_row_highlight
+    main_window_cls.emphasize_selected_row = emphasize_selected_row
+    main_window_cls.update_selected_row_label = update_selected_row_label
     main_window_cls.set_filter_button_checked = set_filter_button_checked
     main_window_cls.apply_table_filter = apply_table_filter
     main_window_cls.clear_table_filter = clear_table_filter
@@ -129,8 +203,6 @@ def cell_text(window, row: int, header: str) -> str:
 
 
 def set_cell_text(window, row: int, header: str, value: str) -> None:
-    from PySide6.QtWidgets import QTableWidgetItem
-
     mapping = header_map(window)
     if row < 0 or header not in mapping:
         return
@@ -165,7 +237,6 @@ def find_next_row(window, predicate) -> int | None:
             continue
         if predicate(row):
             return row
-    # If a filter hides everything relevant, do one unhidden pass after clearing filters conceptually.
     for offset in range(1, total + 1):
         row = (start + offset) % total
         if predicate(row):
@@ -176,7 +247,10 @@ def find_next_row(window, predicate) -> int | None:
 def select_and_preview(window, row: int) -> None:
     window.table.setRowHidden(row, False)
     window.table.selectRow(row)
+    window.table.setCurrentCell(row, 0)
     window.table.scrollToItem(window.table.item(row, 0))
+    if hasattr(window, "emphasize_selected_row"):
+        window.emphasize_selected_row(row)
     if hasattr(window, "extract_selected_pdf_text"):
         window.extract_selected_pdf_text()
 
