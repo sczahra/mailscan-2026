@@ -5,11 +5,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from mailscan2026.core import document_classifier, session_store
+from mailscan2026.core import document_classifier, priority, session_store
 
 
 HEADERS = [
-    "Status", "Category", "Sender", "Type", "Amount", "Due Date",
+    "Priority", "Status", "Category", "Sender", "Type", "Amount", "Due Date",
     "Confidence", "Needs Review", "Source PDF", "Notes", "Review Flags"
 ]
 
@@ -29,6 +29,7 @@ def audit_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
         clean = {header: str(row.get(header, "")) for header in HEADERS}
         flags = build_flags(clean)
         clean["Review Flags"] = "; ".join(flags)
+        clean["Priority"] = priority.compute_priority(clean).label
         audited.append(clean)
     return audited
 
@@ -55,7 +56,6 @@ def build_flags(row: dict[str, str]) -> list[str]:
 
     amount_value = parse_amount(amount)
     type_lower = doc_type.lower()
-    notes_lower = notes.lower()
 
     if "bill / payable" in type_lower and amount_value is None:
         flags.append("Payable bill without amount")
