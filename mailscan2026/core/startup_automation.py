@@ -6,7 +6,7 @@ from typing import Callable
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QCheckBox, QGroupBox, QLabel, QMessageBox, QPushButton, QTableWidgetItem, QVBoxLayout
 
-from mailscan2026.core import session_store, settings_store, vendor_store
+from mailscan2026.core import session_store, settings_store, vendor_candidates, vendor_store
 
 
 def install_startup_automation_tools(main_window_cls, headers: list[str], classify_row: Callable) -> None:
@@ -127,7 +127,7 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
         root = Path(str(self.scan_root_edit.text()).strip()) if hasattr(self, "scan_root_edit") else self.scan_root
         if not root.exists():
             self.log(f"Auto-import skipped. Scan root not found: {root}")
-            self.startup_summary_lines.append(f"Auto-import skipped: scan root not found")
+            self.startup_summary_lines.append("Auto-import skipped: scan root not found")
             return False
         pdfs = [
             p for p in root.rglob("*_OCR.pdf")
@@ -195,10 +195,16 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
         if hasattr(self, "refresh_review_flags"):
             self.refresh_review_flags()
         rows = self.table_rows_as_dicts()
-        removed, compact_path = vendor_store.compact_learned_database()
+        removed, _compact_path = vendor_store.compact_learned_database()
         learned_count, learned_path = vendor_store.learn_from_rows(rows)
-        self.log(f"Auto-learned vendors. New/updated: {learned_count}. Removed weak learned vendors: {removed}. Path: {learned_path}")
-        self.startup_summary_lines.append(f"Auto-learned vendors: {learned_count} new/updated, {removed} cleaned")
+        candidate_added, candidate_updated, candidate_path = vendor_candidates.collect_from_rows(rows)
+        self.log(
+            f"Auto-learned vendors. New/updated: {learned_count}. Removed weak learned vendors: {removed}. "
+            f"Candidate added/updated: {candidate_added}/{candidate_updated}. Path: {learned_path}"
+        )
+        self.startup_summary_lines.append(
+            f"Auto-learned vendors: {learned_count} new/updated, {removed} cleaned, {candidate_added} candidates added, {candidate_updated} candidates updated"
+        )
 
     def auto_generate_audit_safely(self):
         if hasattr(self, "generate_audit_report"):
@@ -219,7 +225,7 @@ def install_startup_automation_tools(main_window_cls, headers: list[str], classi
         self.log(summary)
         if hasattr(self, "text_preview"):
             current = self.text_preview.toPlainText().strip()
-            if not current or current.startswith("Vendor Database"):
+            if not current or current.startswith("Vendor Database") or current.startswith("Vendor Candidates"):
                 self.text_preview.setPlainText(summary)
         if not prefs.quiet_startup_automation:
             QMessageBox.information(self, "Startup Automation Summary", summary)
