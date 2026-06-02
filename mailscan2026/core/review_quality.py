@@ -4,9 +4,10 @@ import os
 from typing import Callable
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMessageBox, QProgressDialog, QPushButton, QTableWidgetItem
 
-from mailscan2026.core import audit_report, session_store, vendor_candidates, vendor_store
+from mailscan2026.core import audit_report, priority, session_store, vendor_candidates, vendor_store
 
 
 REVIEW_FLAGS_HEADER = "Review Flags"
@@ -20,6 +21,8 @@ def install_review_quality_tools(
     cell_text: Callable,
 ) -> None:
     """Patch review-quality tools into the current development UI."""
+    if priority.PRIORITY_HEADER not in headers:
+        headers.insert(0, priority.PRIORITY_HEADER)
     if REVIEW_FLAGS_HEADER not in headers:
         headers.append(REVIEW_FLAGS_HEADER)
 
@@ -51,6 +54,12 @@ def install_review_quality_tools(
         self.clear_candidates_button.clicked.connect(self.clear_vendor_candidates)
         self.promote_candidates_button = QPushButton("Promote Candidates")
         self.promote_candidates_button.clicked.connect(self.promote_vendor_candidates)
+        self.apply_priority_button = QPushButton("Apply Highlights")
+        self.apply_priority_button.clicked.connect(self.apply_priority_highlights)
+        self.mark_reviewed_button = QPushButton("Mark Reviewed")
+        self.mark_reviewed_button.clicked.connect(self.mark_selected_reviewed)
+        self.mark_ignored_button = QPushButton("Mark Ignored")
+        self.mark_ignored_button.clicked.connect(self.mark_selected_ignored)
         self.show_vendors_button = QPushButton("Show Vendor DB")
         self.show_vendors_button.clicked.connect(self.show_vendor_database)
         self.open_local_folder_button = QPushButton("Open Local Folder")
@@ -66,6 +75,9 @@ def install_review_quality_tools(
         review_row.addWidget(self.clean_candidates_button)
         review_row.addWidget(self.clear_candidates_button)
         review_row.addWidget(self.promote_candidates_button)
+        review_row.addWidget(self.apply_priority_button)
+        review_row.addWidget(self.mark_reviewed_button)
+        review_row.addWidget(self.mark_ignored_button)
         review_row.addWidget(self.show_vendors_button)
         review_row.addWidget(self.open_local_folder_button)
         review_row.addStretch()
@@ -77,10 +89,12 @@ def install_review_quality_tools(
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
         self.refresh_review_flags()
+        self.apply_priority_highlights()
 
     def apply_classification_to_row_with_flags(self, row: int, classification):
         original_apply_classification_to_row(self, row, classification)
         self.refresh_review_flags_for_row(row)
+        self.apply_priority_for_row(row)
 
     def refresh_review_flags(self):
         for row in range(self.table.rowCount()):
@@ -98,8 +112,57 @@ def install_review_quality_tools(
         flags = audit_report.build_flags(row_data)
         self.table.setItem(row, headers.index(REVIEW_FLAGS_HEADER), QTableWidgetItem("; ".join(flags)))
 
+    def row_as_dict(self, row: int) -> dict[str, str]:
+        data: dict[str, str] = {}
+        for col, header in enumerate(headers):
+            item = self.table.item(row, col)
+            data[header] = item.text() if item else ""
+        return data
+
+    def apply_priority_for_row(self, row: int):
+        if row < 0 or row >= self.table.rowCount():
+            return
+        result = priority.compute_priority(self.row_as_dict(row))
+        priority_col = headers.index(priority.PRIORITY_HEADER)
+        self.table.setItem(row, priority_col, QTableWidgetItem(result.label))
+        color = QColor(priority.COLOR_HEX.get(result.color_name, priority.COLOR_HEX["none"]))
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row, col)
+            if item is None:
+                item = QTableWidgetItem("")
+                self.table.setItem(row, col, item)
+            item.setBackground(color)
+            item.setToolTip(result.reason)
+
+    def apply_priority_highlights(self):
+        for row in range(self.table.rowCount()):
+            self.apply_priority_for_row(row)
+        self.table.resizeColumnsToContents()
+        self.log("Applied priority highlights to document table.")
+
+    def mark_selected_reviewed(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "No selection", "Select a row first.")
+            return
+        self.table.setItem(row, headers.index("Status"), QTableWidgetItem("Reviewed"))
+        self.refresh_review_flags_for_row(row)
+        self.apply_priority_for_row(row)
+        self.update_dashboard_metrics()
+
+    def mark_selected_ignored(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "No selection", "Select a row first.")
+            return
+        self.table.setItem(row, headers.index("Status"), QTableWidgetItem("Ignored"))
+        self.refresh_review_flags_for_row(row)
+        self.apply_priority_for_row(row)
+        self.update_dashboard_metrics()
+
     def generate_audit_report(self, silent: bool = False):
         self.refresh_review_flags()
+        self.apply_priority_highlights()
         rows = self.table_rows_as_dicts()
         summary = audit_report.export_audit_csv(rows)
         self.log(
@@ -240,6 +303,7 @@ def install_review_quality_tools(
             if result:
                 completed += 1
                 self.refresh_review_flags_for_row(row)
+                self.apply_priority_for_row(row)
             else:
                 failed += 1
             progress.setValue(index + 1)
@@ -248,6 +312,7 @@ def install_review_quality_tools(
         progress.close()
         self.normalize_info_amount_cells()
         self.refresh_review_flags()
+        self.apply_priority_highlights()
         self.update_dashboard_metrics()
         self.log(f"{title} finished. Completed: {completed}, failed/skipped: {failed}.")
         QMessageBox.information(self, title, f"Completed: {completed}\nFailed/skipped: {failed}")
@@ -258,7 +323,8 @@ def install_review_quality_tools(
         for name in [
             "classify_unclassified_button", "classify_flagged_button", "generate_audit_button",
             "learn_vendors_button", "collect_candidates_button", "promote_candidates_button",
-            "clean_candidates_button", "clear_candidates_button",
+            "clean_candidates_button", "clear_candidates_button", "apply_priority_button",
+            "mark_reviewed_button", "mark_ignored_button",
         ]:
             if hasattr(self, name):
                 getattr(self, name).setEnabled(has_rows)
@@ -271,6 +337,11 @@ def install_review_quality_tools(
     main_window_cls.apply_classification_to_row = apply_classification_to_row_with_flags
     main_window_cls.refresh_review_flags = refresh_review_flags
     main_window_cls.refresh_review_flags_for_row = refresh_review_flags_for_row
+    main_window_cls.row_as_dict = row_as_dict
+    main_window_cls.apply_priority_for_row = apply_priority_for_row
+    main_window_cls.apply_priority_highlights = apply_priority_highlights
+    main_window_cls.mark_selected_reviewed = mark_selected_reviewed
+    main_window_cls.mark_selected_ignored = mark_selected_ignored
     main_window_cls.generate_audit_report = generate_audit_report
     main_window_cls.learn_vendors_from_session = learn_vendors_from_session
     main_window_cls.collect_vendor_candidates_from_session = collect_vendor_candidates_from_session
