@@ -6,7 +6,7 @@ from typing import Callable
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMessageBox, QProgressDialog, QPushButton, QTableWidgetItem
 
-from mailscan2026.core import audit_report, session_store, vendor_store
+from mailscan2026.core import audit_report, session_store, vendor_candidates, vendor_store
 
 
 REVIEW_FLAGS_HEADER = "Review Flags"
@@ -41,6 +41,12 @@ def install_review_quality_tools(
         self.generate_audit_button.clicked.connect(self.generate_audit_report)
         self.learn_vendors_button = QPushButton("Learn Vendors")
         self.learn_vendors_button.clicked.connect(self.learn_vendors_from_session)
+        self.collect_candidates_button = QPushButton("Collect Candidates")
+        self.collect_candidates_button.clicked.connect(self.collect_vendor_candidates_from_session)
+        self.show_candidates_button = QPushButton("Show Candidates")
+        self.show_candidates_button.clicked.connect(self.show_vendor_candidates)
+        self.promote_candidates_button = QPushButton("Promote Candidates")
+        self.promote_candidates_button.clicked.connect(self.promote_vendor_candidates)
         self.show_vendors_button = QPushButton("Show Vendor DB")
         self.show_vendors_button.clicked.connect(self.show_vendor_database)
         self.open_local_folder_button = QPushButton("Open Local Folder")
@@ -51,6 +57,9 @@ def install_review_quality_tools(
         review_row.addWidget(self.classify_flagged_button)
         review_row.addWidget(self.generate_audit_button)
         review_row.addWidget(self.learn_vendors_button)
+        review_row.addWidget(self.collect_candidates_button)
+        review_row.addWidget(self.show_candidates_button)
+        review_row.addWidget(self.promote_candidates_button)
         review_row.addWidget(self.show_vendors_button)
         review_row.addWidget(self.open_local_folder_button)
         review_row.addStretch()
@@ -116,6 +125,35 @@ def install_review_quality_tools(
                 f"New/updated learned vendors: {count}\nRemoved weak learned vendors: {removed}\n\nSaved locally:\n{path}\n\nThis keeps only compact vendor hints, not OCR text or PDFs.",
             )
         return count, removed, path
+
+    def collect_vendor_candidates_from_session(self, silent: bool = False):
+        self.refresh_review_flags()
+        rows = self.table_rows_as_dicts()
+        added, updated, path = vendor_candidates.collect_from_rows(rows)
+        self.log(f"Vendor candidates updated. Added: {added}. Updated: {updated}. Path: {path}")
+        if not silent:
+            QMessageBox.information(
+                self,
+                "Vendor Candidates Updated",
+                f"Added candidates: {added}\nUpdated candidates: {updated}\n\nSaved locally:\n{path}\n\nCandidates are inactive until promoted.",
+            )
+        return added, updated, path
+
+    def show_vendor_candidates(self):
+        self.text_preview.setPlainText(vendor_candidates.summary())
+        self.log("Displayed vendor candidates in inspector.")
+
+    def promote_vendor_candidates(self):
+        confirm = QMessageBox.question(
+            self,
+            "Promote Vendor Candidates",
+            "Promote all non-ignored vendor candidates into the learned vendor database?\n\nOnly do this after reviewing the candidate list.",
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        promoted, path = vendor_candidates.promote_all_candidates()
+        self.log(f"Promoted vendor candidates: {promoted}. Learned vendor file: {path}")
+        QMessageBox.information(self, "Candidates Promoted", f"Promoted: {promoted}\n\nSaved locally:\n{path}")
 
     def show_vendor_database(self):
         self.text_preview.setPlainText(vendor_store.database_summary())
@@ -192,11 +230,15 @@ def install_review_quality_tools(
     def update_classify_button_state_with_review(self):
         original_update_classify_button_state(self)
         has_rows = self.table.rowCount() > 0
-        for name in ["classify_unclassified_button", "classify_flagged_button", "generate_audit_button", "learn_vendors_button"]:
+        for name in [
+            "classify_unclassified_button", "classify_flagged_button", "generate_audit_button",
+            "learn_vendors_button", "collect_candidates_button", "promote_candidates_button",
+        ]:
             if hasattr(self, name):
                 getattr(self, name).setEnabled(has_rows)
-        if hasattr(self, "show_vendors_button"):
-            self.show_vendors_button.setEnabled(True)
+        for name in ["show_vendors_button", "show_candidates_button"]:
+            if hasattr(self, name):
+                getattr(self, name).setEnabled(True)
 
     main_window_cls._documents_tab = documents_tab_with_review_tools
     main_window_cls.populate_table_from_rows = populate_table_from_rows_with_flags
@@ -205,6 +247,9 @@ def install_review_quality_tools(
     main_window_cls.refresh_review_flags_for_row = refresh_review_flags_for_row
     main_window_cls.generate_audit_report = generate_audit_report
     main_window_cls.learn_vendors_from_session = learn_vendors_from_session
+    main_window_cls.collect_vendor_candidates_from_session = collect_vendor_candidates_from_session
+    main_window_cls.show_vendor_candidates = show_vendor_candidates
+    main_window_cls.promote_vendor_candidates = promote_vendor_candidates
     main_window_cls.show_vendor_database = show_vendor_database
     main_window_cls.open_local_folder = open_local_folder
     main_window_cls.classify_unclassified_documents = classify_unclassified_documents
