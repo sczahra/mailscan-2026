@@ -2,7 +2,7 @@ from pathlib import Path
 
 from mailscan2026 import NEW_FEATURE_TABS, __version__
 from mailscan2026.core import branding, review_quality, startup_automation
-from mailscan2026.ui import compact_layout
+from mailscan2026.ui import compact_layout, simplified_workflow
 from mailscan2026.ui.main_window import MainWindow, StartupProgress
 
 import mailscan2026.app as base_app
@@ -66,6 +66,11 @@ def run_app():
         _classify_row,
         _dynamic_pdf_path_for_row,
         _cell_text,
+    )
+    simplified_workflow.install_identify_mail_workflow(
+        MainWindow,
+        HEADERS,
+        _classify_row,
     )
     compact_layout.install_compact_documents_patch(MainWindow)
     startup_automation.install_startup_automation_tools(
