@@ -1,4 +1,4 @@
-__version__ = "0.12.0"
+__version__ = "0.12.1"
 
 # Tabs listed here get a one-version red-dot marker in the GUI.
 # Rule: when a previously disabled tab gets a one-version red-dot marker.
