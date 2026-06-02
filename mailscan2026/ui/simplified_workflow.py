@@ -40,7 +40,7 @@ def install_identify_mail_workflow(main_window_cls, headers: list[str], classify
         self.identify_mail_button.setToolTip(
             "Run the normal mail workflow: classify, flag, highlight, learn vendors, update audit, and save session."
         )
-        self.identify_mail_button.setMinimumWidth(140)
+        self.identify_mail_button.setMinimumWidth(150)
         self.identify_mail_button.clicked.connect(self.identify_mail)
 
         self.advanced_tools_button = QPushButton("Advanced Tools")
@@ -176,19 +176,6 @@ def _plain_english_summary(
     learned_path,
     candidate_path,
 ) -> str:
-    priorities = Counter()
-    types = Counter()
-    for row in range(window.table.rowCount()):
-        priorities[_cell_text(window, window.table_headers if hasattr(window, "table_headers") else [], row, "Priority")] += 1
-        # Fall back to direct table lookup for current patch-based headers.
-        try:
-            priorities[window.table.item(row, window.table.horizontalHeaderItem(0).text() == "Priority" and 0 or 0).text()] += 0
-        except Exception:
-            pass
-        if "Type" in window.HEADERS if hasattr(window, "HEADERS") else False:
-            pass
-
-    # Use explicit table scan with visible headers so this survives future column order changes.
     header_map = {}
     for col in range(window.table.columnCount()):
         header_item = window.table.horizontalHeaderItem(col)
