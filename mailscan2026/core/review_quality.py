@@ -45,6 +45,10 @@ def install_review_quality_tools(
         self.collect_candidates_button.clicked.connect(self.collect_vendor_candidates_from_session)
         self.show_candidates_button = QPushButton("Show Candidates")
         self.show_candidates_button.clicked.connect(self.show_vendor_candidates)
+        self.clean_candidates_button = QPushButton("Clean Candidates")
+        self.clean_candidates_button.clicked.connect(self.clean_vendor_candidates)
+        self.clear_candidates_button = QPushButton("Clear Candidates")
+        self.clear_candidates_button.clicked.connect(self.clear_vendor_candidates)
         self.promote_candidates_button = QPushButton("Promote Candidates")
         self.promote_candidates_button.clicked.connect(self.promote_vendor_candidates)
         self.show_vendors_button = QPushButton("Show Vendor DB")
@@ -59,6 +63,8 @@ def install_review_quality_tools(
         review_row.addWidget(self.learn_vendors_button)
         review_row.addWidget(self.collect_candidates_button)
         review_row.addWidget(self.show_candidates_button)
+        review_row.addWidget(self.clean_candidates_button)
+        review_row.addWidget(self.clear_candidates_button)
         review_row.addWidget(self.promote_candidates_button)
         review_row.addWidget(self.show_vendors_button)
         review_row.addWidget(self.open_local_folder_button)
@@ -129,25 +135,44 @@ def install_review_quality_tools(
     def collect_vendor_candidates_from_session(self, silent: bool = False):
         self.refresh_review_flags()
         rows = self.table_rows_as_dicts()
-        added, updated, path = vendor_candidates.collect_from_rows(rows)
-        self.log(f"Vendor candidates updated. Added: {added}. Updated: {updated}. Path: {path}")
+        added, updated, rejected, path = vendor_candidates.collect_from_rows(rows)
+        self.log(f"Vendor candidates updated. Added: {added}. Updated: {updated}. Rejected junk: {rejected}. Path: {path}")
         if not silent:
             QMessageBox.information(
                 self,
                 "Vendor Candidates Updated",
-                f"Added candidates: {added}\nUpdated candidates: {updated}\n\nSaved locally:\n{path}\n\nCandidates are inactive until promoted.",
+                f"Added candidates: {added}\nUpdated candidates: {updated}\nRejected junk: {rejected}\n\nSaved locally:\n{path}\n\nCandidates are inactive until promoted.",
             )
-        return added, updated, path
+        return added, updated, rejected, path
 
     def show_vendor_candidates(self):
         self.text_preview.setPlainText(vendor_candidates.summary())
         self.log("Displayed vendor candidates in inspector.")
 
+    def clean_vendor_candidates(self):
+        removed, path = vendor_candidates.clean_rejected_candidates()
+        self.text_preview.setPlainText(vendor_candidates.summary())
+        self.log(f"Cleaned rejected vendor candidates. Removed: {removed}. Path: {path}")
+        QMessageBox.information(self, "Candidates Cleaned", f"Removed rejected junk candidates: {removed}\n\nSaved locally:\n{path}")
+
+    def clear_vendor_candidates(self):
+        confirm = QMessageBox.question(
+            self,
+            "Clear Vendor Candidates",
+            "Clear all vendor candidates?\n\nThis only clears inactive candidate hints. It does not remove learned vendors, sessions, scans, PDFs, or audit reports.",
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        removed, path = vendor_candidates.clear_candidates(include_rejected=True)
+        self.text_preview.setPlainText(vendor_candidates.summary())
+        self.log(f"Cleared vendor candidates. Removed: {removed}. Path: {path}")
+        QMessageBox.information(self, "Candidates Cleared", f"Removed candidates: {removed}\n\nSaved locally:\n{path}")
+
     def promote_vendor_candidates(self):
         confirm = QMessageBox.question(
             self,
             "Promote Vendor Candidates",
-            "Promote all non-ignored vendor candidates into the learned vendor database?\n\nOnly do this after reviewing the candidate list.",
+            "Promote all active vendor candidates into the learned vendor database?\n\nOnly do this after reviewing the candidate list.",
         )
         if confirm != QMessageBox.Yes:
             return
@@ -233,6 +258,7 @@ def install_review_quality_tools(
         for name in [
             "classify_unclassified_button", "classify_flagged_button", "generate_audit_button",
             "learn_vendors_button", "collect_candidates_button", "promote_candidates_button",
+            "clean_candidates_button", "clear_candidates_button",
         ]:
             if hasattr(self, name):
                 getattr(self, name).setEnabled(has_rows)
@@ -249,6 +275,8 @@ def install_review_quality_tools(
     main_window_cls.learn_vendors_from_session = learn_vendors_from_session
     main_window_cls.collect_vendor_candidates_from_session = collect_vendor_candidates_from_session
     main_window_cls.show_vendor_candidates = show_vendor_candidates
+    main_window_cls.clean_vendor_candidates = clean_vendor_candidates
+    main_window_cls.clear_vendor_candidates = clear_vendor_candidates
     main_window_cls.promote_vendor_candidates = promote_vendor_candidates
     main_window_cls.show_vendor_database = show_vendor_database
     main_window_cls.open_local_folder = open_local_folder
