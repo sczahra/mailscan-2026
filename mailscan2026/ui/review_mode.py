@@ -7,8 +7,8 @@ from PySide6.QtWidgets import QAbstractItemView, QHBoxLayout, QMessageBox, QPush
 
 
 FILTERS = ["All", "Urgent", "Due Soon", "Review", "Payable", "Info", "Reviewed", "Ignored"]
-SELECTION_HIGHLIGHT = QColor("#111111")
-SELECTION_TEXT = QColor("#ffffff")
+SELECTION_HIGHLIGHT = QColor("#fff1a8")
+SELECTION_TEXT = QColor("#000000")
 
 
 def install_review_mode(main_window_cls, headers: list[str]) -> None:
@@ -62,8 +62,8 @@ def install_review_mode(main_window_cls, headers: list[str]) -> None:
             self.table.styleSheet()
             + """
             QTableWidget::item:selected {
-                background: #111111;
-                color: #ffffff;
+                background: #fff1a8;
+                color: #000000;
                 border-top: 2px solid #000000;
                 border-bottom: 2px solid #000000;
             }
@@ -81,6 +81,7 @@ def install_review_mode(main_window_cls, headers: list[str]) -> None:
         self.current_review_row = row
         if previous >= 0 and previous < self.table.rowCount() and hasattr(self, "apply_priority_for_row"):
             self.apply_priority_for_row(previous)
+            reset_row_text_color(self, previous)
         if row >= 0:
             self.emphasize_selected_row(row)
             self.update_selected_row_label(row)
@@ -158,6 +159,7 @@ def install_review_mode(main_window_cls, headers: list[str]) -> None:
             set_cell_text(self, row_before, "Status", "Reviewed")
         if row_before >= 0 and hasattr(self, "apply_priority_for_row"):
             self.apply_priority_for_row(row_before)
+            reset_row_text_color(self, row_before)
         self.jump_to_next_priority("Review")
 
     def mark_selected_ignored_and_advance(self):
@@ -168,6 +170,7 @@ def install_review_mode(main_window_cls, headers: list[str]) -> None:
             set_cell_text(self, row_before, "Status", "Ignored")
         if row_before >= 0 and hasattr(self, "apply_priority_for_row"):
             self.apply_priority_for_row(row_before)
+            reset_row_text_color(self, row_before)
         self.jump_to_next_priority("Review")
 
     main_window_cls._documents_tab = documents_tab_with_review_mode
@@ -206,6 +209,17 @@ def set_cell_text(window, row: int, header: str, value: str) -> None:
     if row < 0 or header not in mapping:
         return
     window.table.setItem(row, mapping[header], QTableWidgetItem(value))
+
+
+def reset_row_text_color(window, row: int) -> None:
+    for col in range(window.table.columnCount()):
+        item = window.table.item(row, col)
+        if item is None:
+            continue
+        item.setForeground(QColor("#000000"))
+        font = item.font()
+        font.setBold(False)
+        item.setFont(font)
 
 
 def row_matches_filter(window, row: int, filter_name: str) -> bool:
