@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -42,8 +45,23 @@ def install_manual_correction_tools(main_window_cls, headers: list[str]) -> None
     def build_correction_panel(self) -> QWidget:
         box = QGroupBox("Manual Correction")
         outer = QVBoxLayout(box)
-        form = QFormLayout()
 
+        top_row = QHBoxLayout()
+        self.correction_summary_label = QLabel("Selected: none")
+        self.correction_summary_label.setStyleSheet("font-weight: bold;")
+        self.correction_expand_toggle = QCheckBox("Show full editor")
+        self.correction_expand_toggle.setChecked(True)
+        self.correction_expand_toggle.toggled.connect(self.set_correction_editor_visible)
+        top_row.addWidget(self.correction_summary_label)
+        top_row.addStretch()
+        top_row.addWidget(self.correction_expand_toggle)
+        outer.addLayout(top_row)
+
+        self.correction_editor_widget = QWidget()
+        editor_layout = QVBoxLayout(self.correction_editor_widget)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+
+        grid = QGridLayout()
         self.correct_sender = QLineEdit()
         self.correct_category = QComboBox()
         self.correct_category.addItems(CATEGORY_CHOICES)
@@ -54,26 +72,39 @@ def install_manual_correction_tools(main_window_cls, headers: list[str]) -> None
         self.correct_due_date.setPlaceholderText("MM/DD/YYYY")
         self.correct_status = QComboBox()
         self.correct_status.addItems(STATUS_CHOICES)
-        self.correct_notes = QPlainTextEdit()
-        self.correct_notes.setMaximumHeight(70)
 
-        form.addRow("Sender", self.correct_sender)
-        form.addRow("Category", self.correct_category)
-        form.addRow("Type", self.correct_type)
-        form.addRow("Amount", self.correct_amount)
-        form.addRow("Due Date", self.correct_due_date)
-        form.addRow("Status", self.correct_status)
-        form.addRow("Notes", self.correct_notes)
-        outer.addLayout(form)
+        grid.addWidget(QLabel("Sender"), 0, 0)
+        grid.addWidget(self.correct_sender, 0, 1, 1, 3)
+        grid.addWidget(QLabel("Category"), 1, 0)
+        grid.addWidget(self.correct_category, 1, 1)
+        grid.addWidget(QLabel("Type"), 1, 2)
+        grid.addWidget(self.correct_type, 1, 3)
+        grid.addWidget(QLabel("Amount"), 2, 0)
+        grid.addWidget(self.correct_amount, 2, 1)
+        grid.addWidget(QLabel("Due"), 2, 2)
+        grid.addWidget(self.correct_due_date, 2, 3)
+        grid.addWidget(QLabel("Status"), 3, 0)
+        grid.addWidget(self.correct_status, 3, 1)
+        editor_layout.addLayout(grid)
+
+        self.correct_notes = QPlainTextEdit()
+        self.correct_notes.setMaximumHeight(48)
+        editor_layout.addWidget(QLabel("Notes"))
+        editor_layout.addWidget(self.correct_notes)
+        outer.addWidget(self.correction_editor_widget)
 
         button_row = QHBoxLayout()
-        self.save_correction_button = QPushButton("Save Correction")
+        self.save_correction_button = QPushButton("Save")
+        self.save_correction_button.setToolTip("Save the manual correction to the selected row and local session.")
         self.save_correction_button.clicked.connect(self.save_selected_row_correction)
-        self.learn_corrected_sender_button = QPushButton("Learn Sender")
+        self.learn_corrected_sender_button = QPushButton("Learn")
+        self.learn_corrected_sender_button.setToolTip("Learn this corrected sender into the local vendor database.")
         self.learn_corrected_sender_button.clicked.connect(self.learn_selected_corrected_sender)
-        self.add_filename_alias_button = QPushButton("Add Filename Alias")
+        self.add_filename_alias_button = QPushButton("Add Alias")
+        self.add_filename_alias_button.setToolTip("Add the selected PDF filename as an alias for the corrected sender.")
         self.add_filename_alias_button.clicked.connect(self.add_selected_filename_alias)
-        self.reload_correction_button = QPushButton("Reload Selected")
+        self.reload_correction_button = QPushButton("Reload")
+        self.reload_correction_button.setToolTip("Reload correction fields from the selected table row.")
         self.reload_correction_button.clicked.connect(self.load_selected_row_into_correction_panel)
 
         for button in [
@@ -82,10 +113,16 @@ def install_manual_correction_tools(main_window_cls, headers: list[str]) -> None
             self.add_filename_alias_button,
             self.reload_correction_button,
         ]:
+            button.setMinimumWidth(80)
+            button.setMaximumWidth(110)
             button_row.addWidget(button)
         button_row.addStretch()
         outer.addLayout(button_row)
         return box
+
+    def set_correction_editor_visible(self, visible: bool) -> None:
+        self.correction_editor_widget.setVisible(visible)
+        self.correction_expand_toggle.setText("Hide full editor" if visible else "Show full editor")
 
     def load_selected_row_into_correction_panel(self) -> None:
         row = self.table.currentRow()
@@ -98,6 +135,17 @@ def install_manual_correction_tools(main_window_cls, headers: list[str]) -> None
         self.correct_due_date.setText(cell_text(self, row, "Due Date"))
         set_combo_text(self.correct_status, cell_text(self, row, "Status") or "Corrected")
         self.correct_notes.setPlainText(cell_text(self, row, "Notes"))
+        self.update_correction_summary_label(row)
+
+    def update_correction_summary_label(self, row: int) -> None:
+        sender = cell_text(self, row, "Sender") or "Unknown sender"
+        priority = cell_text(self, row, "Priority") or "No priority"
+        doc_type = cell_text(self, row, "Type") or "Unknown type"
+        amount = cell_text(self, row, "Amount") or "—"
+        due = cell_text(self, row, "Due Date") or "—"
+        self.correction_summary_label.setText(
+            f"Selected: row {row + 1} | {priority} | {sender} | {doc_type} | {amount} | due {due}"
+        )
 
     def save_selected_row_correction(self) -> None:
         row = self.table.currentRow()
@@ -125,6 +173,7 @@ def install_manual_correction_tools(main_window_cls, headers: list[str]) -> None
             self.apply_priority_for_row(row)
         if hasattr(self, "update_dashboard_metrics"):
             self.update_dashboard_metrics()
+        self.update_correction_summary_label(row)
 
         path = session_store.save_session(self.table_rows_as_dicts())
         if hasattr(self, "update_session_status"):
@@ -191,7 +240,9 @@ def install_manual_correction_tools(main_window_cls, headers: list[str]) -> None
         )
 
     main_window_cls._documents_tab = documents_tab_with_corrections
+    main_window_cls.set_correction_editor_visible = set_correction_editor_visible
     main_window_cls.load_selected_row_into_correction_panel = load_selected_row_into_correction_panel
+    main_window_cls.update_correction_summary_label = update_correction_summary_label
     main_window_cls.save_selected_row_correction = save_selected_row_correction
     main_window_cls.learn_selected_corrected_sender = learn_selected_corrected_sender
     main_window_cls.add_selected_filename_alias = add_selected_filename_alias
