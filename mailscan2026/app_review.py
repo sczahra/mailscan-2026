@@ -2,7 +2,7 @@ from pathlib import Path
 
 from mailscan2026 import NEW_FEATURE_TABS, __version__
 from mailscan2026.core import branding, review_quality, startup_automation
-from mailscan2026.ui import compact_layout, manual_corrections, review_mode, simplified_workflow
+from mailscan2026.ui import compact_layout, finance_export_ui, manual_corrections, review_mode, simplified_workflow
 from mailscan2026.ui.main_window import MainWindow, StartupProgress
 
 import mailscan2026.app as base_app
@@ -80,6 +80,7 @@ def run_app():
         MainWindow,
         HEADERS,
     )
+    finance_export_ui.install_finance_export_tools(MainWindow)
     compact_layout.install_compact_documents_patch(MainWindow)
     startup_automation.install_startup_automation_tools(
         MainWindow,
