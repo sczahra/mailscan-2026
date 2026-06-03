@@ -14,6 +14,7 @@ def install_workflow_tabs(main_window_cls) -> None:
         original_build_ui(self)
         add_workflow_tabs(self)
         self.tabs.currentChanged.connect(lambda _index: refresh_workflow_tab_text(self))
+        set_start_tab(self)
 
     main_window_cls._build_ui = build_ui_with_workflow_tabs
 
@@ -34,6 +35,11 @@ def add_workflow_tabs(window) -> None:
         tabs.setTabText(docs_index, "Documents / Advanced")
         tabs.setTabToolTip(docs_index, "Full legacy power-user table and controls. Nothing was removed.")
 
+    for name in WORKFLOW_TAB_NAMES:
+        index = tab_index(tabs, name)
+        if index >= 0:
+            tabs.setTabToolTip(index, workflow_tooltip(name))
+
 
 def build_inbox_tab(window) -> QWidget:
     tab = QWidget()
@@ -41,14 +47,15 @@ def build_inbox_tab(window) -> QWidget:
     layout.addWidget(section_label("Inbox", "Start here: import/load scans, then identify mail."))
 
     row = QHBoxLayout()
-    row.addWidget(action_button("Identify Mail", lambda: window.identify_mail(), "Run the normal mail workflow."))
-    row.addWidget(action_button("Import OCR PDFs", lambda: window.import_ocr_pdfs(), "Import existing OCR PDFs."))
-    row.addWidget(action_button("Load Session", lambda: window.load_review_session(), "Load the local saved review session."))
+    row.addWidget(action_button("Identify Mail", lambda: run_action(window, "identify_mail"), "Run the normal mail workflow."))
+    row.addWidget(action_button("Import OCR PDFs", lambda: run_action(window, "import_ocr_pdfs"), "Import existing OCR PDFs."))
+    row.addWidget(action_button("Load Session", lambda: run_action(window, "load_review_session"), "Load the local saved review session."))
     row.addStretch()
     layout.addLayout(row)
 
     window.inbox_summary_text = QTextEdit()
     window.inbox_summary_text.setReadOnly(True)
+    window.inbox_summary_text.setPlainText("No mail rows loaded yet. Start with Import OCR PDFs or Load Session.")
     layout.addWidget(window.inbox_summary_text, stretch=1)
     return tab
 
@@ -62,8 +69,8 @@ def build_review_tab(window) -> QWidget:
     nav_row.addWidget(action_button("Next Urgent", lambda: jump_and_show_documents(window, "jump_to_next_priority", "Urgent"), "Jump to next urgent row."))
     nav_row.addWidget(action_button("Next Review", lambda: jump_and_show_documents(window, "jump_to_next_priority", "Review"), "Jump to next review row."))
     nav_row.addWidget(action_button("Next Payable", lambda: jump_and_show_documents(window, "jump_to_next_payable"), "Jump to next payable row."))
-    nav_row.addWidget(action_button("Mark Reviewed", lambda: window.mark_selected_reviewed(), "Mark current row reviewed."))
-    nav_row.addWidget(action_button("Mark Ignored", lambda: window.mark_selected_ignored(), "Mark current row ignored."))
+    nav_row.addWidget(action_button("Mark Reviewed", lambda: run_action(window, "mark_selected_reviewed"), "Mark current row reviewed."))
+    nav_row.addWidget(action_button("Mark Ignored", lambda: run_action(window, "mark_selected_ignored"), "Mark current row ignored."))
     nav_row.addStretch()
     layout.addLayout(nav_row)
 
@@ -75,6 +82,7 @@ def build_review_tab(window) -> QWidget:
 
     window.review_summary_text = QTextEdit()
     window.review_summary_text.setReadOnly(True)
+    window.review_summary_text.setPlainText("Load mail, then use Next Urgent or Next Review to move through the pile.")
     layout.addWidget(window.review_summary_text, stretch=1)
     return tab
 
@@ -86,14 +94,15 @@ def build_correct_tab(window) -> QWidget:
 
     row = QHBoxLayout()
     row.addWidget(action_button("Open Correction Panel", lambda: show_documents_tab(window), "Open Documents / Advanced where the correction panel lives."))
-    row.addWidget(action_button("Save Correction", lambda: window.save_selected_row_correction(), "Save the current correction fields."))
-    row.addWidget(action_button("Learn Sender", lambda: window.learn_selected_corrected_sender(), "Learn the corrected sender."))
-    row.addWidget(action_button("Add Alias", lambda: window.add_selected_filename_alias(), "Add filename alias for corrected sender."))
+    row.addWidget(action_button("Save Correction", lambda: run_action(window, "save_selected_row_correction"), "Save the current correction fields."))
+    row.addWidget(action_button("Learn Sender", lambda: run_action(window, "learn_selected_corrected_sender"), "Learn the corrected sender."))
+    row.addWidget(action_button("Add Alias", lambda: run_action(window, "add_selected_filename_alias"), "Add filename alias for corrected sender."))
     row.addStretch()
     layout.addLayout(row)
 
     window.correct_summary_text = QTextEdit()
     window.correct_summary_text.setReadOnly(True)
+    window.correct_summary_text.setPlainText("Select a row, then open the correction panel to edit sender, amount, due date, type, and notes.")
     layout.addWidget(window.correct_summary_text, stretch=1)
     return tab
 
@@ -104,16 +113,17 @@ def build_vendors_tab(window) -> QWidget:
     layout.addWidget(section_label("Vendors", "Review learned vendors and candidates without crowding the main mail table."))
 
     row = QHBoxLayout()
-    row.addWidget(action_button("Show Vendor DB", lambda: show_text_action(window, "show_vendor_database"), "Show vendor database summary."))
-    row.addWidget(action_button("Show Candidates", lambda: show_text_action(window, "show_vendor_candidates"), "Show vendor candidates."))
-    row.addWidget(action_button("Collect Candidates", lambda: show_text_action(window, "collect_vendor_candidates_from_session"), "Collect candidates from loaded rows."))
-    row.addWidget(action_button("Clean Candidates", lambda: show_text_action(window, "clean_vendor_candidates"), "Remove rejected candidate junk."))
-    row.addWidget(action_button("Promote Candidates", lambda: show_text_action(window, "promote_vendor_candidates"), "Promote active candidates after review."))
+    row.addWidget(action_button("Show Vendor DB", lambda: run_text_action(window, "show_vendor_database"), "Show vendor database summary."))
+    row.addWidget(action_button("Show Candidates", lambda: run_text_action(window, "show_vendor_candidates"), "Show vendor candidates."))
+    row.addWidget(action_button("Collect Candidates", lambda: run_text_action(window, "collect_vendor_candidates_from_session"), "Collect candidates from loaded rows."))
+    row.addWidget(action_button("Clean Candidates", lambda: run_text_action(window, "clean_vendor_candidates"), "Remove rejected candidate junk."))
+    row.addWidget(action_button("Promote Candidates", lambda: run_text_action(window, "promote_vendor_candidates"), "Promote active candidates after review."))
     row.addStretch()
     layout.addLayout(row)
 
     window.vendor_summary_text = QTextEdit()
     window.vendor_summary_text.setReadOnly(True)
+    window.vendor_summary_text.setPlainText("Vendor tools live here. Candidate promotion should still be reviewed carefully.")
     layout.addWidget(window.vendor_summary_text, stretch=1)
     return tab
 
@@ -135,12 +145,44 @@ def action_button(text: str, callback, tooltip: str = "") -> QPushButton:
     return button
 
 
+def run_action(window, method_name: str, *args) -> None:
+    method = getattr(window, method_name, None)
+    if method:
+        method(*args)
+    refresh_workflow_tab_text(window)
+    if hasattr(window, "update_dashboard_metrics"):
+        window.update_dashboard_metrics()
+
+
+def run_text_action(window, method_name: str) -> None:
+    run_action(window, method_name)
+    text = getattr(window, "text_preview", None)
+    vendor_text = getattr(window, "vendor_summary_text", None)
+    if text is not None and vendor_text is not None:
+        vendor_text.setPlainText(text.toPlainText())
+
+
 def tab_index(tabs, exact_name: str) -> int:
     for index in range(tabs.count()):
         label = tabs.tabText(index).replace(" 🔴", "")
         if label == exact_name:
             return index
     return -1
+
+
+def workflow_tooltip(name: str) -> str:
+    return {
+        "Inbox": "Simple start tab: import, load, identify mail.",
+        "Review": "Simple triage tab: jump through urgent/review rows and apply filters.",
+        "Correct": "Simple correction doorway: save corrections and learn cleaned sender names.",
+        "Vendors": "Vendor database and candidate tools.",
+    }.get(name, "MailScan workflow tab")
+
+
+def set_start_tab(window) -> None:
+    index = tab_index(window.tabs, "Inbox")
+    if index >= 0:
+        window.tabs.setCurrentIndex(index)
 
 
 def show_documents_tab(window) -> None:
@@ -163,13 +205,6 @@ def apply_filter_and_show(window, filter_name: str) -> None:
     show_documents_tab(window)
     if hasattr(window, "apply_table_filter"):
         window.apply_table_filter(filter_name)
-    refresh_workflow_tab_text(window)
-
-
-def show_text_action(window, method_name: str) -> None:
-    method = getattr(window, method_name, None)
-    if method:
-        method()
     refresh_workflow_tab_text(window)
 
 
