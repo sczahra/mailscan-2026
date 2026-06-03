@@ -1,3 +1,3 @@
-__version__ = "0.15.0"
+__version__ = "0.16.1"
 
-NEW_FEATURE_TABS: tuple[str, ...] = ("Dashboard", "Finance", "Wiki")
+NEW_FEATURE_TABS: tuple[str, ...] = ("Inbox", "Review", "Correct", "Vendors")
