@@ -7,14 +7,13 @@ WORKFLOW_TAB_NAMES = ["Inbox", "Review", "Correct", "Vendors"]
 
 
 def install_workflow_tabs(main_window_cls) -> None:
-    """Add cleaner workflow tabs without removing the legacy Documents power tab."""
+    """Keep workflow helper tabs available internally, but hide them from normal users."""
     original_build_ui = main_window_cls._build_ui
 
     def build_ui_with_workflow_tabs(self):
         original_build_ui(self)
         add_workflow_tabs(self)
         self.tabs.currentChanged.connect(lambda _index: refresh_workflow_tab_text(self))
-        set_start_tab(self)
 
     main_window_cls._build_ui = build_ui_with_workflow_tabs
 
@@ -32,13 +31,17 @@ def add_workflow_tabs(window) -> None:
 
     docs_index = tab_index(tabs, "Documents")
     if docs_index >= 0:
-        tabs.setTabText(docs_index, "Documents / Advanced")
-        tabs.setTabToolTip(docs_index, "Full legacy power-user table and controls. Nothing was removed.")
+        tabs.setTabText(docs_index, "Advanced")
+        tabs.setTabToolTip(docs_index, "Power-user table and diagnostic controls. Normal users can ignore this tab.")
 
     for name in WORKFLOW_TAB_NAMES:
         index = tab_index(tabs, name)
         if index >= 0:
             tabs.setTabToolTip(index, workflow_tooltip(name))
+            try:
+                tabs.setTabVisible(index, False)
+            except AttributeError:
+                pass
 
 
 def build_inbox_tab(window) -> QWidget:
@@ -66,9 +69,9 @@ def build_review_tab(window) -> QWidget:
     layout.addWidget(section_label("Review", "Work through urgent, payable, and review-needed mail."))
 
     nav_row = QHBoxLayout()
-    nav_row.addWidget(action_button("Next Urgent", lambda: jump_and_show_documents(window, "jump_to_next_priority", "Urgent"), "Jump to next urgent row."))
-    nav_row.addWidget(action_button("Next Review", lambda: jump_and_show_documents(window, "jump_to_next_priority", "Review"), "Jump to next review row."))
-    nav_row.addWidget(action_button("Next Payable", lambda: jump_and_show_documents(window, "jump_to_next_payable"), "Jump to next payable row."))
+    nav_row.addWidget(action_button("Next Urgent", lambda: jump_and_show_advanced(window, "jump_to_next_priority", "Urgent"), "Jump to next urgent row."))
+    nav_row.addWidget(action_button("Next Review", lambda: jump_and_show_advanced(window, "jump_to_next_priority", "Review"), "Jump to next review row."))
+    nav_row.addWidget(action_button("Next Payable", lambda: jump_and_show_advanced(window, "jump_to_next_payable"), "Jump to next payable row."))
     nav_row.addWidget(action_button("Mark Reviewed", lambda: run_action(window, "mark_selected_reviewed"), "Mark current row reviewed."))
     nav_row.addWidget(action_button("Mark Ignored", lambda: run_action(window, "mark_selected_ignored"), "Mark current row ignored."))
     nav_row.addStretch()
@@ -93,7 +96,7 @@ def build_correct_tab(window) -> QWidget:
     layout.addWidget(section_label("Correct", "Use this tab as a clean doorway to the correction panel."))
 
     row = QHBoxLayout()
-    row.addWidget(action_button("Open Correction Panel", lambda: show_documents_tab(window), "Open Documents / Advanced where the correction panel lives."))
+    row.addWidget(action_button("Open Correction Panel", lambda: show_advanced_tab(window), "Open Advanced where the correction panel lives."))
     row.addWidget(action_button("Save Correction", lambda: run_action(window, "save_selected_row_correction"), "Save the current correction fields."))
     row.addWidget(action_button("Learn Sender", lambda: run_action(window, "learn_selected_corrected_sender"), "Learn the corrected sender."))
     row.addWidget(action_button("Add Alias", lambda: run_action(window, "add_selected_filename_alias"), "Add filename alias for corrected sender."))
@@ -150,6 +153,8 @@ def run_action(window, method_name: str, *args) -> None:
     if method:
         method(*args)
     refresh_workflow_tab_text(window)
+    if hasattr(window, "refresh_home_summary"):
+        window.refresh_home_summary()
     if hasattr(window, "update_dashboard_metrics"):
         window.update_dashboard_metrics()
 
@@ -172,29 +177,25 @@ def tab_index(tabs, exact_name: str) -> int:
 
 def workflow_tooltip(name: str) -> str:
     return {
-        "Inbox": "Simple start tab: import, load, identify mail.",
-        "Review": "Simple triage tab: jump through urgent/review rows and apply filters.",
-        "Correct": "Simple correction doorway: save corrections and learn cleaned sender names.",
-        "Vendors": "Vendor database and candidate tools.",
+        "Inbox": "Hidden helper tab. Home is the normal start screen.",
+        "Review": "Hidden helper tab. Home and Review Attention Items are the normal path.",
+        "Correct": "Hidden helper tab. Advanced contains correction tools.",
+        "Vendors": "Hidden helper tab. Vendor tools will move into Advanced settings later.",
     }.get(name, "MailScan workflow tab")
 
 
-def set_start_tab(window) -> None:
-    index = tab_index(window.tabs, "Inbox")
-    if index >= 0:
-        window.tabs.setCurrentIndex(index)
-
-
-def show_documents_tab(window) -> None:
-    index = tab_index(window.tabs, "Documents / Advanced")
+def show_advanced_tab(window) -> None:
+    index = tab_index(window.tabs, "Advanced")
+    if index < 0:
+        index = tab_index(window.tabs, "Documents / Advanced")
     if index < 0:
         index = tab_index(window.tabs, "Documents")
     if index >= 0:
         window.tabs.setCurrentIndex(index)
 
 
-def jump_and_show_documents(window, method_name: str, *args) -> None:
-    show_documents_tab(window)
+def jump_and_show_advanced(window, method_name: str, *args) -> None:
+    show_advanced_tab(window)
     method = getattr(window, method_name, None)
     if method:
         method(*args)
@@ -202,7 +203,7 @@ def jump_and_show_documents(window, method_name: str, *args) -> None:
 
 
 def apply_filter_and_show(window, filter_name: str) -> None:
-    show_documents_tab(window)
+    show_advanced_tab(window)
     if hasattr(window, "apply_table_filter"):
         window.apply_table_filter(filter_name)
     refresh_workflow_tab_text(window)
@@ -218,7 +219,7 @@ def refresh_workflow_tab_text(window) -> None:
 
 def build_workflow_summary(window) -> str:
     if not hasattr(window, "table") or window.table.rowCount() == 0:
-        return "No mail rows loaded yet. Start with Import OCR PDFs or Load Session."
+        return "No mail rows loaded yet. Start from Home with Import Mail or Identify Mail."
     counts = {}
     headers = {}
     for col in range(window.table.columnCount()):
@@ -240,7 +241,7 @@ def build_workflow_summary(window) -> str:
             lines.append(f"- {name}: {counts[name]}")
     lines.extend([
         "",
-        "Tip: use Inbox for Identify Mail, Review for triage, Correct for edits, Vendors for learning/candidates, and Documents / Advanced when you need every control.",
+        "Tip: Home is the normal workflow. Use Advanced only when you need every internal control.",
     ])
     return "\n".join(lines)
 
