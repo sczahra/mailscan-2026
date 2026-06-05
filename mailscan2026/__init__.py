@@ -1,3 +1,3 @@
-__version__ = "0.17.0"
+__version__ = "0.17.1"
 
-NEW_FEATURE_TABS: tuple[str, ...] = ("Home", "Documents / Advanced")
+NEW_FEATURE_TABS: tuple[str, ...] = ("Home", "Advanced")
