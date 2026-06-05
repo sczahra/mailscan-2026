@@ -2,7 +2,7 @@ from pathlib import Path
 
 from mailscan2026 import NEW_FEATURE_TABS, __version__
 from mailscan2026.core import branding, review_quality, startup_automation
-from mailscan2026.ui import compact_layout, dashboard_ui, finance_export_ui, manual_corrections, review_mode, simplified_workflow, workflow_tabs
+from mailscan2026.ui import compact_layout, dashboard_ui, finance_export_ui, home_ui, manual_corrections, review_mode, simplified_workflow, workflow_tabs
 from mailscan2026.ui.main_window import MainWindow, StartupProgress
 
 import mailscan2026.app as base_app
@@ -56,6 +56,7 @@ def install_branding_patch() -> None:
 def run_app():
     install_wiki_patch()
     workflow_tabs.install_workflow_tabs(MainWindow)
+    home_ui.install_home_ui(MainWindow)
     install_safe_column_patch()
     install_branding_patch()
     dashboard_ui.install_dashboard_ui(MainWindow)
